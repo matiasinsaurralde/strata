@@ -224,3 +224,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# strata: local-only artifacts
+# evals.md — design doc, intentionally not committed
+evals.md
+# results/ — regenerable eval run outputs
+results/
+# labels.jsonl — hand-labelled ground truth; kept local for now
+labels.jsonl
+# examples.txt — scratch notes
+examples.txt

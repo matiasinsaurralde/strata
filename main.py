@@ -1,7 +1,15 @@
-"""Sample GitHub Security Advisories and write an enriched ghsa-commits index."""
+"""Sample GitHub Security Advisories and write an enriched ghsa-commits index.
+
+Append-only by default: each run adds new advisories/commits to the existing
+bundle and never touches rows already present — their diffs, enrichment, and
+merged `role` are frozen (GHSA advisories don't change once published). This is
+what lets you label incrementally without the ground truth shifting under you.
+Pass --fresh to deliberately rebuild from scratch.
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import random
@@ -18,6 +26,9 @@ ADVISORY_DATABASE = Path("advisory-database")
 ADVISORY_SOURCE = "github-reviewed"
 # Random sample size. Set to 0 to take every matching advisory (no limit).
 SAMPLE_SIZE = 10
+# In append mode (default), SAMPLE_SIZE means "add up to N advisories NOT already
+# in the bundle" per run. 0 = add every new match. With --fresh it means "take N
+# total" as before.
 # Ecosystem filter (e.g. "Go", "npm"). Set to None to disable.
 ECOSYSTEM: str | None = "Go"
 # Inclusive published-date range. None → defaults: start=first of current month, end=today.
@@ -27,6 +38,10 @@ END_DATE: date | None = None
 GHSA_COMMITS_DIR = Path("ghsa-commits")
 SCHEMA_VERSION = 2
 DIFFS_LAYOUT = "diffs/{host}/{owner}/{repo}/{sha}.diff"
+# Durable human labels, merged into commit rows on every build. Hand-edited (or
+# written by label.py); keyed by (host, repo, sha). Survives the destructive
+# rebuild that regenerates GHSA_COMMITS_DIR — that is the whole point.
+LABELS_PATH = Path("labels.jsonl")
 # Resolve commit metadata + diffs via the GitHub API (uses GITHUB_TOKEN if set).
 ENRICH = True
 
@@ -286,6 +301,13 @@ def build_commit_rows(
                 "url": ref["url"],
                 "ordinal": ordinal,
                 "n_in_advisory": n,
+                # Provenance: this SHA was cited by a GHSA advisory. The only hard
+                # fact we have. Whether it is *the fix* is unknown until labelled.
+                "source": "ghsa",
+                "ghsa_referenced": True,
+                # Ground-truth role (fix | context | backport | introduce | other).
+                # Never auto-derived from GHSA; filled in only by manual labelling.
+                "role": None,
             }
         )
     return rows
@@ -545,6 +567,7 @@ def build_audit_queue(commit_rows: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "diff_path": row.get("diff_path"),
                 "diff_bytes": row.get("diff_bytes"),
                 "noise_flags": list(row.get("noise_flags") or []),
+                "role": row.get("role"),
                 "audit_status": "pending",
                 # Human label: fix | context | introduce | bump | other | nonexistent
                 "audit_label": None,
@@ -555,6 +578,85 @@ def build_audit_queue(commit_rows: list[dict[str, Any]]) -> list[dict[str, Any]]
         if ghsa_id not in ids:
             ids.append(ghsa_id)
     return list(by_key.values())
+
+
+def load_labels(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Read labels.jsonl into a {(host, repo, sha): label} map. Missing file → {}."""
+    labels: dict[tuple[str, str, str], dict[str, Any]] = {}
+    if not path.exists():
+        return labels
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            key = (str(row["host"]), str(row["repo"]), str(row["sha"]).lower())
+            labels[key] = row
+    return labels
+
+
+def apply_labels(
+    commit_rows: list[dict[str, Any]],
+    labels: dict[tuple[str, str, str], dict[str, Any]],
+) -> int:
+    """Set role/label_notes on commit rows from labels. Returns count applied."""
+    applied = 0
+    for row in commit_rows:
+        key = (str(row["host"]), str(row["repo"]), str(row["sha"]).lower())
+        label = labels.get(key)
+        if label and label.get("role") is not None:
+            row["role"] = label["role"]
+            if label.get("notes"):
+                row["label_notes"] = label["notes"]
+            applied += 1
+    return applied
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read a .jsonl file into a list of dicts. Missing file → []."""
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def commit_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (str(row["host"]), str(row["repo"]), str(row["sha"]).lower())
+
+
+def load_existing_bundle(
+    out_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (existing_advisories, existing_commits) from a prior bundle."""
+    return (
+        read_jsonl(out_dir / "advisories.jsonl"),
+        read_jsonl(out_dir / "commits.jsonl"),
+    )
+
+
+def merge_rows(
+    existing: list[dict[str, Any]],
+    new: list[dict[str, Any]],
+    key_fn: Callable[[dict[str, Any]], Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """Union existing + new by key. Existing rows are kept as-is (frozen);
+    only genuinely new keys are appended. Returns (merged, n_added)."""
+    seen = {key_fn(r) for r in existing}
+    merged = list(existing)
+    added = 0
+    for row in new:
+        k = key_fn(row)
+        if k not in seen:
+            seen.add(k)
+            merged.append(row)
+            added += 1
+    return merged, added
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -635,6 +737,15 @@ def summarize(advisory: dict, commit_urls: list[str] | None = None) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="rebuild from scratch (destructive); default is append-only",
+    )
+    args = parser.parse_args()
+    append = not args.fresh
+
     start, end = resolve_date_range(START_DATE, END_DATE)
     month_dirs = iter_month_dirs(ADVISORY_DATABASE, start, end, source=ADVISORY_SOURCE)
     if not month_dirs:
@@ -642,6 +753,13 @@ def main() -> None:
             f"No advisory month directories found for {start.isoformat()}..{end.isoformat()} "
             f"under {ADVISORY_DATABASE / 'advisories' / ADVISORY_SOURCE}"
         )
+
+    # Load the existing bundle so we can add only what is new (append mode).
+    existing_advisories, existing_commits = (
+        load_existing_bundle(GHSA_COMMITS_DIR) if append else ([], [])
+    )
+    existing_ghsa_ids = {str(a.get("ghsa_id")) for a in existing_advisories}
+    existing_commit_keys = {commit_key(c) for c in existing_commits}
 
     files = list_advisory_files(month_dirs)
     matches: list[tuple[Path, dict, list[dict[str, str]]]] = []
@@ -663,13 +781,32 @@ def main() -> None:
             f"found for {range_label}"
         )
 
+    # In append mode, only consider advisories not already in the bundle so
+    # SAMPLE_SIZE means "add up to N NEW ones" and reruns keep making progress.
+    candidates = matches
+    if append:
+        candidates = [
+            m for m in matches if str(m[1].get("id")) not in existing_ghsa_ids
+        ]
+    if append and not candidates:
+        print(
+            f"Nothing new to add: all {len(matches)} matching advisories for "
+            f"{range_label} are already in {GHSA_COMMITS_DIR}/ "
+            f"({len(existing_advisories)} advisories, {len(existing_commits)} commits)."
+        )
+        return
+
     if SAMPLE_SIZE == 0:
-        samples = matches
-        label = f"Listing all {len(samples)}"
+        samples = candidates
+        label = f"Adding all {len(samples)} new" if append else f"Listing all {len(samples)}"
     else:
-        sample_size = min(SAMPLE_SIZE, len(matches))
-        samples = random.sample(matches, sample_size)
-        label = f"Sampling {len(samples)} of {len(matches)}"
+        sample_size = min(SAMPLE_SIZE, len(candidates))
+        samples = random.sample(candidates, sample_size)
+        label = (
+            f"Adding {len(samples)} new (of {len(candidates)} not yet in bundle)"
+            if append
+            else f"Sampling {len(samples)} of {len(candidates)}"
+        )
 
     reviewed = ADVISORY_SOURCE == "github-reviewed"
     advisory_rows: list[dict[str, Any]] = []
@@ -690,23 +827,46 @@ def main() -> None:
         )
         commit_rows.extend(build_commit_rows(ghsa_id, refs))
 
-    # Write skeleton first so diffs land under out_dir during enrichment.
-    if GHSA_COMMITS_DIR.exists():
+    # In append mode the diffs/ tree already holds prior diffs; only create the
+    # skeleton when starting fresh. Never rmtree in append mode.
+    if not append and GHSA_COMMITS_DIR.exists():
         shutil.rmtree(GHSA_COMMITS_DIR)
-    GHSA_COMMITS_DIR.mkdir(parents=True)
-    (GHSA_COMMITS_DIR / "diffs").mkdir()
+    GHSA_COMMITS_DIR.mkdir(parents=True, exist_ok=True)
+    (GHSA_COMMITS_DIR / "diffs").mkdir(exist_ok=True)
+
+    # Enrich only the NEW commits — existing ones are frozen, so we never re-hit
+    # the API for a SHA we already resolved. This is what keeps daily reruns cheap.
+    new_commit_rows = (
+        [c for c in commit_rows if commit_key(c) not in existing_commit_keys]
+        if append
+        else commit_rows
+    )
 
     enrich_stats: dict[str, Any] | None = None
     if ENRICH:
         enrich_stats = enrich_commit_rows(
-            commit_rows, advisory_rows, GHSA_COMMITS_DIR
+            new_commit_rows, advisory_rows, GHSA_COMMITS_DIR
         )
 
-    audit_queue = build_audit_queue(commit_rows) if ENRICH else []
+    # Merge new rows into the frozen existing set (union by key; existing wins).
+    all_advisories, adv_added = merge_rows(
+        existing_advisories, advisory_rows, lambda a: str(a.get("ghsa_id"))
+    )
+    all_commits, com_added = merge_rows(
+        existing_commits, new_commit_rows, commit_key
+    )
+
+    # Merge durable human labels across the WHOLE set so `role` is populated on
+    # every commit (old and new) without touching diffs or enrichment.
+    labels = load_labels(LABELS_PATH)
+    labels_applied = apply_labels(all_commits, labels)
+
+    audit_queue = build_audit_queue(all_commits) if ENRICH else []
 
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "mode": "append" if append else "fresh",
         "advisory_database": ADVISORY_DATABASE.as_posix(),
         "advisory_source": ADVISORY_SOURCE,
         "ecosystem": ECOSYSTEM,
@@ -715,22 +875,25 @@ def main() -> None:
         "sample_size": SAMPLE_SIZE,
         "files_scanned": len(files),
         "matches_total": len(matches),
-        "advisories": len(advisory_rows),
-        "commit_refs": len(commit_rows),
+        "added_this_run": {"advisories": adv_added, "commits": com_added},
+        "advisories": len(all_advisories),
+        "commit_refs": len(all_commits),
         "diffs_layout": DIFFS_LAYOUT,
         "enriched": bool(ENRICH),
+        "labels_applied": labels_applied,
+        "unlabelled": sum(1 for c in all_commits if c.get("role") is None),
     }
     if enrich_stats is not None:
-        manifest["enrichment"] = enrich_stats
+        manifest["enrichment_this_run"] = enrich_stats
         manifest["audit_queue"] = len(audit_queue)
 
     write_ghsa_commits(
         GHSA_COMMITS_DIR,
-        advisories=advisory_rows,
-        commits=commit_rows,
+        advisories=all_advisories,
+        commits=all_commits,
         manifest=manifest,
         audit_queue=audit_queue if ENRICH else None,
-        preserve_diffs=ENRICH,
+        preserve_diffs=True,  # always keep the diffs/ tree; we merge, never wipe
     )
 
     print(
@@ -739,12 +902,13 @@ def main() -> None:
         f"across {len(month_dirs)} month dir(s)"
     )
     print(
-        f"Wrote {GHSA_COMMITS_DIR}/ "
-        f"({len(advisory_rows)} advisories, {len(commit_rows)} commit refs)"
+        f"Added {adv_added} advisory(ies), {com_added} commit(s). "
+        f"Bundle now: {len(all_advisories)} advisories, {len(all_commits)} commits "
+        f"({manifest['unlabelled']} unlabelled)."
     )
     if enrich_stats is not None:
         print(
-            f"Enrichment: {enrich_stats['resolved']}/{enrich_stats['unique_commits']} resolved, "
+            f"Enrichment (new only): {enrich_stats['resolved']}/{enrich_stats['unique_commits']} resolved, "
             f"{enrich_stats['diffs_written']} diffs, "
             f"msg_class={enrich_stats['msg_class']}"
         )

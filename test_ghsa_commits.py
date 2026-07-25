@@ -74,6 +74,9 @@ def test_build_advisory_and_commit_rows() -> None:
             "url": "https://github.com/o/r/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "ordinal": 1,
             "n_in_advisory": 2,
+            "source": "ghsa",
+            "ghsa_referenced": True,
+            "role": None,
         },
         {
             "ghsa_id": "GHSA-xxxx-yyyy-zzzz",
@@ -83,6 +86,9 @@ def test_build_advisory_and_commit_rows() -> None:
             "url": "https://github.com/o/r/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "ordinal": 2,
             "n_in_advisory": 2,
+            "source": "ghsa",
+            "ghsa_referenced": True,
+            "role": None,
         },
     ]
 
