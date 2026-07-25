@@ -3,6 +3,8 @@ name = "strata"
 version = "0.1.0"
 description = "Sample and summarize GitHub Security Advisories"
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
 
 [dependency-groups]
