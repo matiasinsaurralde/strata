@@ -5,6 +5,14 @@ bundle and never touches rows already present — their diffs, enrichment, and
 merged `role` are frozen (GHSA advisories don't change once published). This is
 what lets you label incrementally without the ground truth shifting under you.
 Pass --fresh to deliberately rebuild from scratch.
+
+Usage:
+    python main.py                      # append up to SAMPLE_SIZE new advisories
+    python main.py --sample-size 25     # append up to 25 new advisories
+    python main.py --sample-size 0      # append every new matching advisory
+    python main.py --fresh              # destructive rebuild
+    python main.py --apply-labels-only  # merge labels.jsonl, no API
+    python main.py --reresolve          # retry unresolved enrichments
 """
 
 from __future__ import annotations
@@ -24,11 +32,10 @@ from typing import Any, Callable
 ADVISORY_DATABASE = Path("advisory-database")
 # Advisory corpus under advisories/: "github-reviewed" or "unreviewed".
 ADVISORY_SOURCE = "github-reviewed"
-# Random sample size. Set to 0 to take every matching advisory (no limit).
+# Default random sample size (overridable with --sample-size). 0 = every match.
 SAMPLE_SIZE = 10
-# In append mode (default), SAMPLE_SIZE means "add up to N advisories NOT already
-# in the bundle" per run. 0 = add every new match. With --fresh it means "take N
-# total" as before.
+# In append mode (default), this means "add up to N advisories NOT already in the
+# bundle" per run. 0 = add every new match. With --fresh it means "take N total".
 # Ecosystem filter (e.g. "Go", "npm"). Set to None to disable.
 ECOSYSTEM: str | None = "Go"
 # Inclusive published-date range. None → defaults: start=first of current month, end=today.
@@ -854,7 +861,21 @@ def main() -> None:
         action="store_true",
         help="re-fetch only commits stuck at resolved=False (transient API failures); labels untouched",
     )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=SAMPLE_SIZE,
+        metavar="N",
+        help=(
+            f"advisories to sample this run (default {SAMPLE_SIZE}; "
+            "0 = all matching / all new in append mode)"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.sample_size < 0:
+        raise SystemExit("--sample-size must be >= 0")
+    sample_size_limit = args.sample_size
 
     # Load a .env so GITHUB_TOKEN can live there instead of being exported each
     # session (real env vars still win). Best-effort; eval.py owns the parser.
@@ -911,7 +932,7 @@ def main() -> None:
         )
 
     # In append mode, only consider advisories not already in the bundle so
-    # SAMPLE_SIZE means "add up to N NEW ones" and reruns keep making progress.
+    # --sample-size means "add up to N NEW ones" and reruns keep making progress.
     candidates = matches
     if append:
         candidates = [
@@ -925,12 +946,12 @@ def main() -> None:
         )
         return
 
-    if SAMPLE_SIZE == 0:
+    if sample_size_limit == 0:
         samples = candidates
         label = f"Adding all {len(samples)} new" if append else f"Listing all {len(samples)}"
     else:
-        sample_size = min(SAMPLE_SIZE, len(candidates))
-        samples = random.sample(candidates, sample_size)
+        n = min(sample_size_limit, len(candidates))
+        samples = random.sample(candidates, n)
         label = (
             f"Adding {len(samples)} new (of {len(candidates)} not yet in bundle)"
             if append
@@ -1001,7 +1022,7 @@ def main() -> None:
         "ecosystem": ECOSYSTEM,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
-        "sample_size": SAMPLE_SIZE,
+        "sample_size": sample_size_limit,
         "files_scanned": len(files),
         "matches_total": len(matches),
         "added_this_run": {"advisories": adv_added, "commits": com_added},

@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from eval import diff_leaks_disclosure, load_dotenv, summarize_by_role, summarize_recall
+from eval import diff_leaks_disclosure, load_dotenv, parse_reset_duration, retry_wait_seconds, summarize_by_role, summarize_recall
 from main import apply_labels, build_commit_rows, load_labels
 
 
@@ -103,6 +103,55 @@ def test_load_dotenv_sets_and_respects_precedence(tmp_path: Path, monkeypatch) -
 
 def test_load_dotenv_missing_file(tmp_path: Path) -> None:
     assert load_dotenv(tmp_path / "nope.env") == 0
+
+
+def test_parse_reset_duration_openai_forms() -> None:
+    assert parse_reset_duration("1s") == 1.0
+    assert parse_reset_duration("6m0s") == 360.0
+    assert parse_reset_duration("1h2m3s") == 3723.0
+    assert parse_reset_duration("1.5s") == 1.5
+    assert parse_reset_duration("2") == 2.0
+    assert parse_reset_duration("") is None
+    assert parse_reset_duration(None) is None
+
+
+def test_retry_wait_seconds_prefers_retry_after() -> None:
+    assert retry_wait_seconds({"retry-after": "7"}) == 7.0
+    assert retry_wait_seconds(
+        {
+            "retry-after": "2",
+            "x-ratelimit-reset-requests": "6m0s",
+        }
+    ) == 2.0
+    assert retry_wait_seconds({"x-ratelimit-reset-requests": "1s"}) == 1.0
+    assert retry_wait_seconds({}) == 5.0
+
+
+def test_skip_oversize_diff() -> None:
+    from eval import DIFF_SKIP_MAX_BYTES, is_request_too_large, skip_oversize_diff
+
+    small = "x" * 100
+    assert skip_oversize_diff({"diff_bytes": 100}, small) is None
+    assert skip_oversize_diff({}, small) is None
+
+    # Meta alone can trigger skip even if we pass a short string (stale path).
+    reason = skip_oversize_diff({"diff_bytes": DIFF_SKIP_MAX_BYTES + 1}, "tiny")
+    assert reason is not None and "too large" in reason
+
+    # On-disk length alone can trigger skip when meta is missing/understated.
+    big = "y" * (DIFF_SKIP_MAX_BYTES + 10)
+    reason = skip_oversize_diff({"diff_bytes": 1}, big)
+    assert reason is not None and "too large" in reason
+
+    assert is_request_too_large(
+        "Request too large for gpt-4o-mini on tokens per min (TPM): Limit 200000, Requested 228721"
+    )
+    # Transient TPM exhaustion — must NOT be treated as oversized.
+    assert not is_request_too_large(
+        "Rate limit reached for gpt-4o-mini in organization org-x on tokens per "
+        "min (TPM): Limit 200000, Used 195000, Requested 8000. Please try again in 1s."
+    )
+    assert not is_request_too_large("Rate limit reached for requests")
 
 
 def test_sampler_plan_counts_per_repo_and_total() -> None:
