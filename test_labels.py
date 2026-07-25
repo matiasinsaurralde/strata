@@ -127,6 +127,18 @@ def test_retry_wait_seconds_prefers_retry_after() -> None:
     assert retry_wait_seconds({}) == 5.0
 
 
+def test_rate_limit_backoff_uses_exponential_floor() -> None:
+    from eval import rate_limit_backoff_seconds
+
+    # Short Retry-After must not keep attempt 4 at 1s.
+    assert rate_limit_backoff_seconds({"retry-after": "1"}, 1) == 1.0
+    assert rate_limit_backoff_seconds({"retry-after": "1"}, 4) == 8.0
+    assert rate_limit_backoff_seconds({"retry-after": "1"}, 8) == 120.0  # capped
+
+    # Header wins when longer than the floor.
+    assert rate_limit_backoff_seconds({"retry-after": "30"}, 3) == 30.0
+
+
 def test_skip_oversize_diff() -> None:
     from eval import DIFF_SKIP_MAX_BYTES, is_request_too_large, skip_oversize_diff
 

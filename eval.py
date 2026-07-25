@@ -64,8 +64,12 @@ MANIFEST_PATH = GHSA_COMMITS_DIR / "manifest.json"
 # org RPM allows. Higher than ~16 rarely helps on small corpora and worsens 429s.
 DEFAULT_PARALLEL = 8
 MAX_PARALLEL = 32
-MAX_RETRIES = 8
+MAX_RETRIES = 12
 HTTP_TIMEOUT_S = 120
+# Cap a single shared pause so one bad header cannot stall the run for hours.
+MAX_BACKOFF_S = 120.0
+# Floor for attempt n after a 429: max(header_wait, min(2^(n-1), MAX_BACKOFF_S)).
+# Stops burning retries on 1s Retry-After while the TPM bucket is still empty.
 
 # Skip (do not classify) diffs larger than this. Tuned for the default model
 # gpt-4o-mini: 128k context + org TPM often ~200k. Dense code is ~2.5–3 chars/token,
@@ -231,6 +235,13 @@ def retry_wait_seconds(headers: dict[str, str], *, default: float = 5.0) -> floa
     return default
 
 
+def rate_limit_backoff_seconds(headers: dict[str, str], attempt: int) -> float:
+    """Combine API headers with an exponential floor so short Retry-After cannot burn retries."""
+    header_wait = retry_wait_seconds(headers)
+    floor = min(2.0 ** max(0, attempt - 1), MAX_BACKOFF_S)
+    return min(MAX_BACKOFF_S, max(header_wait, floor))
+
+
 class RateLimitGate:
     """Shared pause across worker threads when any call hits a rate limit."""
 
@@ -247,7 +258,7 @@ class RateLimitGate:
             time.sleep(min(delay, 1.0))
 
     def backoff(self, seconds: float, *, why: str = "rate limit") -> None:
-        seconds = max(1.0, min(float(seconds), 120.0))
+        seconds = max(1.0, min(float(seconds), MAX_BACKOFF_S))
         with self._lock:
             until = time.monotonic() + seconds
             if until > self._wait_until:
@@ -363,7 +374,7 @@ def openai_chat_completion(cfg: EndpointConfig, diff_text: str, gate: RateLimitG
             if exc.code == 429 and is_request_too_large(detail):
                 raise RuntimeError(f"request too large: {detail}") from exc
             if exc.code == 429 or (exc.code == 503 and "rate" in detail.lower()):
-                wait = retry_wait_seconds(headers)
+                wait = rate_limit_backoff_seconds(headers, attempt)
                 gate.backoff(
                     wait,
                     why=f"HTTP {exc.code} (attempt {attempt}/{MAX_RETRIES})",
