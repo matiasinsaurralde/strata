@@ -35,17 +35,23 @@ Usage:
     python sample_negatives.py --per-repo 1        # 1 per repo — smallest test pull
     python sample_negatives.py --total 50          # ~50 overall, even split across repos
     python sample_negatives.py --dry-run           # list what would be pulled, no writes
-    python sample_negatives.py --pages 3           # how many API pages/repo to draw from
+    python sample_negatives.py --pages 10          # deepen history pool (100 commits/page)
+
+Requires GITHUB_TOKEN (env or .env) — without it the unauthenticated 60/hr limit
+makes multi-repo listing fail and every repo reports +0.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
+from eval import load_dotenv
 from main import (
     GHSA_COMMITS_DIR,
     LABELS_PATH,
@@ -81,27 +87,34 @@ def existing_keys(commits: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
 
 def list_repo_commit_shas(
     host: str, repo: str, pages: int
-) -> list[str]:
-    """Return commit SHAs from the first `pages` of a repo's history (newest-first).
+) -> tuple[list[str], str | None]:
+    """Return (SHAs from first `pages` of history, error_or_None).
 
-    github.com only (the bundle is github-only today). Returns [] on any error
-    (missing repo, rate limit) — the caller just gets no negatives for that repo.
+    github.com only. On API failure returns ([], reason) so the caller can
+    surface rate-limits instead of silently reporting +0.
     """
     if host != "github.com":
-        return []
+        return [], f"unsupported host {host}"
     shas: list[str] = []
     for page in range(1, pages + 1):
         url = (
             f"https://api.github.com/repos/{repo}/commits"
             f"?per_page={PER_PAGE}&page={page}"
         )
-        status, body, _ = github_http_get(url, "application/vnd.github+json")
+        status, body, headers = github_http_get(url, "application/vnd.github+json")
         if status != 200:
-            break
+            remaining = headers.get("x-ratelimit-remaining")
+            detail = body.decode("utf-8", errors="replace")[:160].replace("\n", " ")
+            reason = f"HTTP {status}"
+            if remaining is not None:
+                reason += f" (rate-limit remaining={remaining})"
+            if detail:
+                reason += f": {detail}"
+            return shas, reason
         try:
             payload = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
-            break
+            return shas, f"invalid JSON on page {page}"
         if not payload:
             break
         for entry in payload:
@@ -110,7 +123,7 @@ def list_repo_commit_shas(
                 shas.append(str(sha).lower())
         if len(payload) < PER_PAGE:
             break  # last page
-    return shas
+    return shas, None
 
 
 def sample_shas_for_repo(
@@ -119,15 +132,23 @@ def sample_shas_for_repo(
     n: int,
     existing: set[tuple[str, str, str]],
     pages: int,
-) -> list[str]:
-    """Pick up to n random SHAs from the repo, excluding any already in the bundle."""
-    candidates = [
-        s for s in list_repo_commit_shas(host, repo, pages)
-        if (host, repo, s) not in existing
-    ]
+) -> tuple[list[str], str | None]:
+    """Pick up to n random SHAs from the repo, excluding any already in the bundle.
+
+    Returns (shas, note). note is set when the pool is empty or the API failed.
+    """
+    listed, err = list_repo_commit_shas(host, repo, pages)
+    if err and not listed:
+        return [], err
+    candidates = [s for s in listed if (host, repo, s) not in existing]
+    if not candidates:
+        note = f"0 candidates in first {pages} page(s) ({len(listed)} listed, all already in bundle)"
+        if err:
+            note += f"; also: {err}"
+        return [], note
     if len(candidates) <= n:
-        return candidates
-    return random.sample(candidates, n)
+        return candidates, err  # partial page fetch still usable
+    return random.sample(candidates, n), err
 
 
 def build_negative_row(host: str, repo: str, sha: str) -> dict[str, Any]:
@@ -169,6 +190,17 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="show plan, no API writes")
     args = parser.parse_args()
 
+    # Same as main.py / eval.py: GITHUB_TOKEN often lives in .env, not the shell.
+    load_dotenv()
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token:
+        print(
+            "Warning: no GITHUB_TOKEN/GH_TOKEN (env or .env). "
+            "Unauthenticated GitHub API is 60 req/hr — listing 37 repos × pages "
+            "will fail and look like +0 everywhere.",
+            file=sys.stderr,
+        )
+
     per_repo = args.per_repo
     if per_repo is None and args.total is None:
         per_repo = 10  # default knob
@@ -185,17 +217,34 @@ def main() -> None:
     print(f"{len(repos)} repo(s) in bundle; sampling negatives ({mode}, {args.pages} page(s)/repo).")
 
     new_rows: list[dict[str, Any]] = []
+    api_failures = 0
     for host, repo in repos:
         want = targets[(host, repo)]
         if want <= 0:
             continue
-        shas = sample_shas_for_repo(host, repo, want, existing, args.pages)
+        shas, note = sample_shas_for_repo(host, repo, want, existing, args.pages)
         for sha in shas:
             new_rows.append(build_negative_row(host, repo, sha))
-        print(f"  {repo:40} +{len(shas)} (wanted {want})")
+            existing.add((host, repo, sha))  # avoid dupes within this run
+        line = f"  {repo:40} +{len(shas)} (wanted {want})"
+        if note and not shas:
+            api_failures += 1
+            line += f"  — {note}"
+        elif note:
+            line += f"  — {note}"
+        print(line)
 
     if not new_rows:
         print("\nNothing new to sample (all candidates already in the bundle, or repos unreachable).")
+        if api_failures:
+            print(
+                f"  {api_failures} repo(s) failed API listing — set GITHUB_TOKEN in .env "
+                f"(or export it), or raise --pages once auth works."
+            )
+        else:
+            print(
+                "  Tip: deepen the pool with e.g. `--pages 10` (100 commits/page, newest-first)."
+            )
         return
 
     if args.dry_run:
