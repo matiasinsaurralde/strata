@@ -698,6 +698,107 @@ def write_ghsa_commits(
         f.write("\n")
 
 
+def apply_labels_only(out_dir: Path) -> None:
+    """Merge labels.jsonl into an existing bundle's commits.jsonl and rewrite it.
+
+    No advisory walk, no API calls, no new data — just re-applies human labels so
+    `role` reflects labels.jsonl. This is the fast post-labelling step: run it,
+    then eval. Diffs and all other rows are left untouched.
+    """
+    commits_path = out_dir / "commits.jsonl"
+    if not commits_path.exists():
+        raise SystemExit(f"No bundle at {commits_path}. Run main.py first.")
+
+    commits = read_jsonl(commits_path)
+    labels = load_labels(LABELS_PATH)
+    applied = apply_labels(commits, labels)
+    advisories = read_jsonl(out_dir / "advisories.jsonl")
+    audit_queue = build_audit_queue(commits)
+
+    manifest_path = out_dir / "manifest.json"
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.exists()
+        else {"schema_version": SCHEMA_VERSION}
+    )
+    manifest["labels_applied"] = applied
+    manifest["unlabelled"] = sum(1 for c in commits if c.get("role") is None)
+
+    write_ghsa_commits(
+        out_dir,
+        advisories=advisories,
+        commits=commits,
+        manifest=manifest,
+        audit_queue=audit_queue,
+        preserve_diffs=True,
+    )
+    print(
+        f"Applied {applied} label(s) to {len(commits)} commit(s) "
+        f"({manifest['unlabelled']} unlabelled). No data pulled."
+    )
+
+
+def reresolve_unresolved(out_dir: Path) -> None:
+    """Retry enrichment for commits stuck at resolved=False (e.g. transient API
+    rate-limit failures). Re-fetches ONLY those rows; resolved rows and all
+    labels are left untouched. Needs GITHUB_TOKEN for a usable rate limit.
+    """
+    commits_path = out_dir / "commits.jsonl"
+    if not commits_path.exists():
+        raise SystemExit(f"No bundle at {commits_path}. Run main.py first.")
+
+    commits = read_jsonl(commits_path)
+    unresolved = [c for c in commits if not c.get("resolved")]
+    if not unresolved:
+        print("No unresolved commits. Nothing to re-fetch.")
+        return
+
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    print(
+        f"Re-fetching {len(unresolved)} unresolved commit(s)"
+        f"{' (no GITHUB_TOKEN — 60/hr limit)' if not token else ''}..."
+    )
+
+    # enrich_commit_rows updates rows in place and writes diffs. Empty advisories
+    # list → lag_days stays None for any negatives; positives keep their existing
+    # lag_days (unchanged rows aren't re-touched here since we pass only unresolved).
+    before = len(unresolved)
+    enrich_commit_rows(unresolved, [], out_dir)
+    now_resolved = sum(1 for c in unresolved if c.get("resolved"))
+
+    # Merge labels back (unchanged, but keeps role consistent) and rewrite.
+    labels = load_labels(LABELS_PATH)
+    labels_applied = apply_labels(commits, labels)
+    advisories = read_jsonl(out_dir / "advisories.jsonl")
+    audit_queue = build_audit_queue(commits)
+
+    manifest_path = out_dir / "manifest.json"
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.exists()
+        else {"schema_version": SCHEMA_VERSION}
+    )
+    manifest["labels_applied"] = labels_applied
+    manifest["unlabelled"] = sum(1 for c in commits if c.get("role") is None)
+    manifest["reresolved_this_run"] = now_resolved
+    manifest["still_unresolved"] = sum(1 for c in commits if not c.get("resolved"))
+
+    write_ghsa_commits(
+        out_dir,
+        advisories=advisories,
+        commits=commits,
+        manifest=manifest,
+        audit_queue=audit_queue,
+        preserve_diffs=True,
+    )
+    print(
+        f"Re-resolved {now_resolved}/{before}. "
+        f"Still unresolved: {manifest['still_unresolved']}. Labels untouched."
+    )
+    if manifest["still_unresolved"]:
+        print("  (rate-limited or genuinely missing — re-run later or set GITHUB_TOKEN)")
+
+
 def summarize(advisory: dict, commit_urls: list[str] | None = None) -> str:
     ghsa_id = advisory.get("id", "?")
     summary = (advisory.get("summary") or "").replace("\n", " ").strip()
@@ -743,7 +844,35 @@ def main() -> None:
         action="store_true",
         help="rebuild from scratch (destructive); default is append-only",
     )
+    parser.add_argument(
+        "--apply-labels-only",
+        action="store_true",
+        help="merge labels.jsonl into the existing bundle and exit (no API, no new data)",
+    )
+    parser.add_argument(
+        "--reresolve",
+        action="store_true",
+        help="re-fetch only commits stuck at resolved=False (transient API failures); labels untouched",
+    )
     args = parser.parse_args()
+
+    # Load a .env so GITHUB_TOKEN can live there instead of being exported each
+    # session (real env vars still win). Best-effort; eval.py owns the parser.
+    try:
+        from eval import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
+    if args.apply_labels_only:
+        apply_labels_only(GHSA_COMMITS_DIR)
+        return
+
+    if args.reresolve:
+        reresolve_unresolved(GHSA_COMMITS_DIR)
+        return
+
     append = not args.fresh
 
     start, end = resolve_date_range(START_DATE, END_DATE)

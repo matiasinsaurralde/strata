@@ -124,6 +124,49 @@ def test_sampler_plan_counts_per_repo_and_total() -> None:
     assert row["n_in_advisory"] == 0
 
 
+def test_apply_labels_only_merges_into_bundle(tmp_path: Path) -> None:
+    import main
+
+    out = tmp_path / "ghsa-commits"
+    out.mkdir()
+    (out / "diffs").mkdir()
+    # a minimal bundle with two commits, roles null
+    (out / "commits.jsonl").write_text(
+        json.dumps({"ghsa_id": "G1", "host": "github.com", "repo": "o/r", "sha": "aaa",
+                    "url": "https://github.com/o/r/commit/aaa", "role": None})
+        + "\n"
+        + json.dumps({"ghsa_id": "G1", "host": "github.com", "repo": "o/r", "sha": "bbb",
+                      "url": "https://github.com/o/r/commit/bbb", "role": None})
+        + "\n",
+        encoding="utf-8",
+    )
+    (out / "advisories.jsonl").write_text(json.dumps({"ghsa_id": "G1"}) + "\n", encoding="utf-8")
+    (out / "manifest.json").write_text(json.dumps({"schema_version": 2}) + "\n", encoding="utf-8")
+    labels = tmp_path / "labels.jsonl"
+    labels.write_text(
+        json.dumps({"host": "github.com", "repo": "o/r", "sha": "aaa", "role": "fix"}) + "\n",
+        encoding="utf-8",
+    )
+
+    # point the module's LABELS_PATH at our temp labels file
+    monkey_prev = main.LABELS_PATH
+    main.LABELS_PATH = labels
+    try:
+        main.apply_labels_only(out)
+    finally:
+        main.LABELS_PATH = monkey_prev
+
+    rows = [json.loads(l) for l in (out / "commits.jsonl").read_text().splitlines() if l.strip()]
+    by_sha = {r["sha"]: r for r in rows}
+    assert by_sha["aaa"]["role"] == "fix"  # merged
+    assert by_sha["bbb"]["role"] is None   # untouched
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["labels_applied"] == 1
+    assert manifest["unlabelled"] == 1
+    # diffs/ preserved
+    assert (out / "diffs").is_dir()
+
+
 def test_sampler_excludes_existing_keys() -> None:
     from sample_negatives import bundle_repos, existing_keys
 
