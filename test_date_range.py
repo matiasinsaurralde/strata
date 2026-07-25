@@ -51,6 +51,21 @@ def test_iter_month_dirs_includes_overlapping_months(tmp_path: Path) -> None:
     ]
 
 
+def test_iter_month_dirs_uses_unreviewed_source(tmp_path: Path) -> None:
+    root = tmp_path
+    (root / "advisories" / "unreviewed" / "2026" / "07").mkdir(parents=True)
+    (root / "advisories" / "github-reviewed" / "2026" / "07").mkdir(parents=True)
+    dirs = iter_month_dirs(
+        root, date(2026, 7, 1), date(2026, 7, 31), source="unreviewed"
+    )
+    assert dirs == [root / "advisories" / "unreviewed" / "2026" / "07"]
+
+
+def test_iter_month_dirs_rejects_unknown_source(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="ADVISORY_SOURCE"):
+        iter_month_dirs(tmp_path, date(2026, 7, 1), date(2026, 7, 31), source="other")
+
+
 def test_advisory_published_date_parses_iso() -> None:
     assert advisory_published_date({"published": "2026-07-02T20:31:26Z"}) == date(
         2026, 7, 2

@@ -9,6 +9,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 ADVISORY_DATABASE = Path("advisory-database")
+# Advisory corpus under advisories/: "github-reviewed" or "unreviewed".
+ADVISORY_SOURCE = "github-reviewed"
 # Random sample size. Set to 0 to take every matching advisory (no limit).
 SAMPLE_SIZE = 0
 # Ecosystem filter (e.g. "Go", "npm"). Set to None to disable.
@@ -46,14 +48,21 @@ def resolve_date_range(
     return resolved_start, resolved_end
 
 
-def iter_month_dirs(root: Path, start: date, end: date) -> list[Path]:
-    """Return existing github-reviewed year/month dirs overlapping [start, end]."""
+def iter_month_dirs(
+    root: Path,
+    start: date,
+    end: date,
+    source: str = "github-reviewed",
+) -> list[Path]:
+    """Return existing year/month dirs under advisories/<source> overlapping [start, end]."""
+    if source not in {"github-reviewed", "unreviewed"}:
+        raise ValueError(
+            f"ADVISORY_SOURCE must be 'github-reviewed' or 'unreviewed', got {source!r}"
+        )
     dirs: list[Path] = []
     year, month = start.year, start.month
     while (year, month) <= (end.year, end.month):
-        month_dir = (
-            root / "advisories" / "github-reviewed" / f"{year:04d}" / f"{month:02d}"
-        )
+        month_dir = root / "advisories" / source / f"{year:04d}" / f"{month:02d}"
         if month_dir.is_dir():
             dirs.append(month_dir)
         if month == 12:
@@ -172,11 +181,11 @@ def summarize(advisory: dict, commit_urls: list[str] | None = None) -> str:
 
 def main() -> None:
     start, end = resolve_date_range(START_DATE, END_DATE)
-    month_dirs = iter_month_dirs(ADVISORY_DATABASE, start, end)
+    month_dirs = iter_month_dirs(ADVISORY_DATABASE, start, end, source=ADVISORY_SOURCE)
     if not month_dirs:
         raise SystemExit(
             f"No advisory month directories found for {start.isoformat()}..{end.isoformat()} "
-            f"under {ADVISORY_DATABASE / 'advisories' / 'github-reviewed'}"
+            f"under {ADVISORY_DATABASE / 'advisories' / ADVISORY_SOURCE}"
         )
 
     files = list_advisory_files(month_dirs)
@@ -195,8 +204,8 @@ def main() -> None:
     range_label = f"{start.isoformat()}..{end.isoformat()}"
     if not matches:
         raise SystemExit(
-            f"No {ecosystem_label} advisories with GitHub commit URLs found "
-            f"for {range_label}"
+            f"No {ecosystem_label} {ADVISORY_SOURCE} advisories with GitHub commit URLs "
+            f"found for {range_label}"
         )
 
     if SAMPLE_SIZE == 0:
@@ -208,7 +217,7 @@ def main() -> None:
         label = f"Sampling {len(samples)} of {len(matches)}"
 
     print(
-        f"{label} {ecosystem_label} advisories with GitHub commit URLs "
+        f"{label} {ecosystem_label} {ADVISORY_SOURCE} advisories with GitHub commit URLs "
         f"({len(files)} scanned) for {range_label} "
         f"across {len(month_dirs)} month dir(s)"
     )
