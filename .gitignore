@@ -6,6 +6,9 @@ __pycache__/
 # Local advisory-database clone (symlink)
 advisory-database
 
+# Generated GHSA → commit index
+ghsa-commits/
+
 # C extensions
 *.so
 

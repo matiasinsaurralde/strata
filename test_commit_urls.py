@@ -29,10 +29,10 @@ def test_extracts_pull_request_commit_url() -> None:
     ]
 
 
-def test_normalizes_http_and_www() -> None:
+def test_normalizes_http_www_and_lowercases_repo() -> None:
     text = "http://www.github.com/Owner/Repo/commit/ABCDEF0"
     assert extract_github_commit_urls(text) == [
-        "https://github.com/Owner/Repo/commit/abcdef0"
+        "https://github.com/owner/repo/commit/abcdef0"
     ]
 
 
