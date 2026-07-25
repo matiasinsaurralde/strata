@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>strata label — UI mock</title>
+<style>
+  /* Primer-ish GitHub light (approx. github.com / Primer CSS tokens) */
+  :root {
+    --bg: #f6f8fa;
+    --bg-panel: #ffffff;
+    --bg-diff: #ffffff;
+    --ink: #1f2328;
+    --ink-soft: #656d76;
+    --ink-faint: #8c959f;
+    --line: #d0d7de;
+    --line-strong: #afb8c1;
+    --accent: #0969da;
+    --accent-soft: #ddf4ff;
+    --fix: #1a7f37;
+    --context: #0969da;
+    --backport: #9a6700;
+    --introduce: #cf222e;
+    --other: #656d76;
+    --add-bg: #dafbe1;
+    --add-fg: #116329;
+    --del-bg: #ffebe9;
+    --del-fg: #82071e;
+    --hunk-bg: #ddf4ff;
+    --hunk-fg: #0550ae;
+    --meta-bg: #f6f8fa;
+    --warn: #cf222e;
+    --crit: #cf222e;
+    --high: #9a6700;
+    --mod: #0969da;
+    --low: #656d76;
+    --shadow: 0 1px 0 rgba(31, 35, 40, 0.04);
+    --radius: 6px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-height: 100vh;
+  }
+
+  /* —— top bar —— */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.65rem 1rem;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow);
+  }
+  .brand {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-size: 0.95rem;
+  }
+  .brand span { color: var(--accent); font-weight: 600; }
+  .mock-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #9a6700;
+    background: #fff8c5;
+    border: 1px solid #d4a72c;
+    padding: 0.15rem 0.45rem;
+    border-radius: 2em;
+  }
+  .progress-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+  .progress-meta {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .progress-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+    max-width: 280px;
+  }
+  .progress-bar > i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 180ms ease;
+  }
+  .top-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .btn {
+    font-family: var(--font);
+    font-size: 0.8rem;
+    font-weight: 500;
+    border: 1px solid var(--line);
+    background: var(--bg-panel);
+    color: var(--ink);
+    border-radius: var(--radius);
+    padding: 0.35rem 0.65rem;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+  }
+  .btn:hover { background: var(--meta-bg); border-color: var(--line-strong); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--ink-soft); box-shadow: none; }
+  .btn.ghost:hover { background: var(--meta-bg); color: var(--ink); }
+
+  /* —— main columns —— */
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(240px, 22%) minmax(260px, 24%) 1fr;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .col {
+    min-height: 0;
+    overflow: auto;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--line);
+  }
+  .col:last-child { border-right: none; background: var(--bg-diff); }
+  .col-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.55rem 0.85rem;
+    background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line);
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .col-body { padding: 0.85rem; }
+
+  /* advisory */
+  .sev {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0.12rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid;
+  }
+  .sev.CRITICAL { color: #82071e; background: #ffebe9; border-color: #ff8182; }
+  .sev.HIGH { color: #9a6700; background: #fff8c5; border-color: #d4a72c; }
+  .sev.MODERATE { color: #0550ae; background: #ddf4ff; border-color: #54aeff; }
+  .sev.LOW { color: #656d76; background: #f6f8fa; border-color: #d0d7de; }
+  .sev.SAMPLE { color: #8250df; background: #fbefff; border-color: #d2a8ff; }
+
+  .chip.sampler { color: #8250df; background: #fbefff; border-color: #d2a8ff; }
+  .chip.source { color: var(--ink-soft); }
+
+  .adv-summary {
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    margin: 0.55rem 0 0.75rem;
+    line-height: 1.3;
+  }
+  .kv {
+    display: grid;
+    grid-template-columns: 7.2rem 1fr;
+    gap: 0.35rem 0.5rem;
+    font-size: 0.82rem;
+    margin-bottom: 0.9rem;
+  }
+  .kv dt { color: var(--ink-faint); }
+  .kv dd { margin: 0; font-family: var(--mono); font-size: 0.78rem; word-break: break-all; }
+  .kv a { color: var(--accent); text-decoration: none; }
+  .kv a:hover { text-decoration: underline; }
+
+  .hint {
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    background: var(--accent-soft);
+    border: 1px solid #54aeff;
+    border-radius: var(--radius);
+    padding: 0.55rem 0.65rem;
+    margin: 0 0 0.9rem;
+  }
+  .hint strong { color: var(--accent); font-weight: 600; }
+
+  .siblings h3 {
+    margin: 0 0 0.35rem;
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .siblings .sib-note {
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    margin: 0 0 0.55rem;
+  }
+  .sib {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--line);
+    background: var(--meta-bg);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.55rem;
+    margin-bottom: 0.35rem;
+    color: var(--ink-soft);
+    cursor: default;
+    opacity: 0.72;
+  }
+  .sib.current {
+    opacity: 1;
+    border-color: #0969da;
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 #0969da;
+    color: var(--ink);
+  }
+  .sib .now {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #fff;
+    background: #0969da;
+    padding: 0.1rem 0.35rem;
+    border-radius: 2em;
+    margin-bottom: 0.3rem;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  .sib .ord {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--ink-faint);
+  }
+  .sib .sha {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    font-weight: 550;
+  }
+  .sib .sub {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.75rem;
+    color: inherit;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sib .role-pill {
+    float: right;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    background: #ffffff;
+    color: var(--ink-soft);
+    border: 1px solid var(--line);
+  }
+  .sib .role-pill.fix { color: #1a7f37; background: #dafbe1; border-color: #4ac26b; }
+  .sib .role-pill.context { color: #0969da; background: #ddf4ff; border-color: #54aeff; }
+  .sib .role-pill.backport { color: #9a6700; background: #fff8c5; border-color: #d4a72c; }
+  .sib .role-pill.other { color: var(--other); }
+
+  .suggest {
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+    border-top: 1px dashed var(--line-strong);
+  }
+  .suggest h3 {
+    margin: 0 0 0.25rem;
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .suggest .suggest-note {
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    margin: 0 0 0.55rem;
+  }
+  .suggest-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--meta-bg);
+    padding: 0.6rem 0.65rem;
+  }
+  .suggest-card .row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.45rem;
+  }
+  .suggest-card .role-pill {
+    float: none;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 650;
+    padding: 0.12rem 0.4rem;
+    border-radius: 2em;
+    border: 1px solid var(--line);
+    background: #fff;
+  }
+  .suggest-card .role-pill.fix { color: #1a7f37; background: #dafbe1; border-color: #4ac26b; }
+  .suggest-card .role-pill.context { color: #0969da; background: #ddf4ff; border-color: #54aeff; }
+  .suggest-card .role-pill.backport { color: #9a6700; background: #fff8c5; border-color: #d4a72c; }
+  .suggest-card .role-pill.introduce { color: #cf222e; background: #ffebe9; border-color: #ff8182; }
+  .suggest-card .role-pill.other { color: #656d76; background: #f6f8fa; border-color: #d0d7de; }
+  .suggest-card .conf {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--ink-faint);
+  }
+  .suggest-card .why {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    line-height: 1.4;
+  }
+  .suggest-card .why strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .suggest-card .apply {
+    margin-top: 0.55rem;
+    width: 100%;
+    font-family: var(--font);
+    font-size: 0.75rem;
+    font-weight: 500;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    border-radius: var(--radius);
+    padding: 0.35rem 0.5rem;
+    cursor: pointer;
+  }
+  .suggest-card .apply:hover { background: var(--accent-soft); border-color: #54aeff; color: #0550ae; }
+  .suggest-card .apply kbd {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    background: var(--meta-bg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 0.05rem 0.25rem;
+  }
+
+  /* commit */
+  .subject {
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    margin: 0 0 0.65rem;
+    line-height: 1.3;
+  }
+  .reviewing-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.65rem;
+    padding: 0.45rem 0.6rem;
+    background: #ddf4ff;
+    border: 1px solid #54aeff;
+    border-radius: var(--radius);
+    font-size: 0.78rem;
+    color: #0550ae;
+    line-height: 1.2;
+  }
+  .reviewing-banner .tag {
+    flex: 0 0 auto;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #fff;
+    background: #0969da;
+    padding: 0.15rem 0.4rem;
+    border-radius: 2em;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  .reviewing-banner .who {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-soft);
+  }
+  .reviewing-banner .who code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .reviewing-banner .ord {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #0550ae;
+    white-space: nowrap;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.85rem;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    font-weight: 550;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    background: var(--meta-bg);
+    color: var(--ink-soft);
+    border: 1px solid var(--line);
+  }
+  .chip.quiet { color: #9a6700; background: #fff8c5; border-color: #d4a72c; }
+  .chip.announced { color: #1a7f37; background: #dafbe1; border-color: #4ac26b; }
+  .chip.noise { color: #cf222e; background: #ffebe9; border-color: #ff8182; }
+
+  .message {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.65rem;
+    max-height: 10rem;
+    overflow: auto;
+    color: var(--ink-soft);
+    margin-bottom: 0.85rem;
+  }
+
+  .links {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-bottom: 0.85rem;
+  }
+  .links a {
+    font-size: 0.8rem;
+    color: var(--accent);
+    text-decoration: none;
+    word-break: break-all;
+  }
+  .links a:hover { text-decoration: underline; }
+  .links a::before {
+    content: "↗ ";
+    color: var(--ink-faint);
+  }
+
+  .rubric {
+    border-top: 1px dashed var(--line-strong);
+    padding-top: 0.75rem;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+  }
+  .rubric ol { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+  .rubric li { margin-bottom: 0.25rem; }
+  .rubric code {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    background: var(--meta-bg);
+    padding: 0.05rem 0.25rem;
+    border-radius: 3px;
+  }
+
+  /* diff */
+  .diff-meta {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--ink-soft);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .diff {
+    margin: 0;
+    padding: 0.5rem 0 1.5rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    overflow-x: auto;
+  }
+  .diff .line {
+    display: grid;
+    grid-template-columns: 3.2rem 1fr;
+    white-space: pre;
+    min-width: max-content;
+    width: 100%;
+  }
+  .diff .ln {
+    text-align: right;
+    padding: 0 0.55rem 0 0.4rem;
+    color: var(--ink-faint);
+    user-select: none;
+    border-right: 1px solid var(--line);
+  }
+  .diff .tx { padding: 0 0.75rem; }
+  .diff .file {
+    margin-top: 0.75rem;
+    background: #f6f8fa;
+    color: #1f2328;
+    font-weight: 600;
+    border-top: 1px solid #d0d7de;
+    border-bottom: 1px solid #d0d7de;
+  }
+  .diff .file:first-child { margin-top: 0; }
+  .diff .hunk { background: var(--hunk-bg); color: var(--hunk-fg); }
+  .diff .add { background: var(--add-bg); color: var(--add-fg); }
+  .diff .del { background: var(--del-bg); color: var(--del-fg); }
+  .diff .ctx .tx { color: var(--ink-soft); }
+  .diff .empty {
+    padding: 2rem 1rem;
+    color: var(--ink-faint);
+    font-family: var(--font);
+  }
+
+  /* —— action bar —— */
+  .actionbar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.65rem 1rem;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -1px 0 rgba(28, 27, 25, 0.03);
+  }
+  .roles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .role-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font);
+    font-size: 0.82rem;
+    font-weight: 550;
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    color: var(--ink);
+    border-radius: var(--radius);
+    padding: 0.45rem 0.7rem;
+    cursor: pointer;
+    transition: background 100ms ease, border-color 100ms ease, transform 80ms ease;
+  }
+  .role-btn:hover { background: var(--meta-bg); }
+  .role-btn:active { transform: translateY(1px); }
+  .role-btn.selected {
+    border-color: #0969da;
+    background: #ddf4ff;
+    box-shadow: inset 0 0 0 1px #0969da;
+  }
+  .role-btn .key {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 650;
+    min-width: 1.15rem;
+    text-align: center;
+    padding: 0.05rem 0.25rem;
+    border-radius: 3px;
+    background: var(--ink);
+    color: var(--bg-panel);
+  }
+  .role-btn[data-role="fix"] .key { background: var(--fix); }
+  .role-btn[data-role="context"] .key { background: var(--context); }
+  .role-btn[data-role="backport"] .key { background: var(--backport); }
+  .role-btn[data-role="introduce"] .key { background: var(--introduce); }
+  .role-btn[data-role="other"] .key { background: var(--other); }
+
+  .aux {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .aux .role-btn .key { background: var(--ink-soft); }
+
+  .notes-row {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .notes-row label {
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    white-space: nowrap;
+  }
+  .notes-row input {
+    flex: 1;
+    font-family: var(--font);
+    font-size: 0.85rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    padding: 0.45rem 0.6rem;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .notes-row input:focus {
+    outline: 2px solid #0969da33;
+    outline-offset: 0;
+    border-color: #0969da;
+  }
+  .notes-row input:disabled {
+    opacity: 0.55;
+    background: var(--meta-bg);
+  }
+  .confirm-btn {
+    background: #1f883d;
+    color: #fff;
+    border-color: rgba(31, 35, 40, 0.15);
+  }
+  .confirm-btn:hover { background: #1a7f37; color: #fff; }
+  .confirm-btn:disabled { background: #94d3a2; color: #fff; filter: none; }
+
+  .toast {
+    position: fixed;
+    bottom: 5.5rem;
+    right: 1rem;
+    background: #24292f;
+    color: #ffffff;
+    font-size: 0.8rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: var(--radius);
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 160ms ease, transform 160ms ease;
+    pointer-events: none;
+    z-index: 10;
+    max-width: 22rem;
+    box-shadow: 0 8px 24px rgba(140, 149, 159, 0.2);
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  .done-screen {
+    display: none;
+    place-items: center;
+    padding: 3rem 1rem;
+    text-align: center;
+  }
+  .done-screen.show { display: grid; }
+  .done-screen h1 {
+    margin: 0 0 0.5rem;
+    font-size: 1.4rem;
+    letter-spacing: -0.02em;
+  }
+  .done-screen p { color: var(--ink-soft); margin: 0 0 1rem; }
+
+
+  .suggest-card.loading .why,
+  .suggest-card.error .why { color: var(--ink-faint); font-style: italic; }
+  .suggest-card.error { border-color: #ff8182; background: #ffebe9; }
+  .suggest-card .apply:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  @media (max-width: 980px) {
+    .workspace {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto 1fr;
+      overflow: auto;
+    }
+    .col { border-right: none; border-bottom: 1px solid var(--line); max-height: none; }
+    .col.diff-col { min-height: 50vh; }
+    .actionbar { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">strata <span>label</span></div>
+    <span class="mock-badge" id="modeBadge">web</span>
+    <div class="progress-wrap">
+      <div class="progress-meta" id="progressMeta">—</div>
+      <div class="progress-bar" aria-hidden="true"><i id="progressFill"></i></div>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="btnPrev" type="button" title="Previous (←)">← prev</button>
+      <button class="btn ghost" id="btnNext" type="button" title="Skip / next (s)">skip →</button>
+    </div>
+  </header>
+
+  <main class="workspace" id="workspace">
+    <section class="col" aria-label="Advisory">
+      <div class="col-head">Advisory</div>
+      <div class="col-body" id="advisoryCol"></div>
+    </section>
+
+    <section class="col" aria-label="Commit">
+      <div class="col-head">Commit</div>
+      <div class="col-body" id="commitCol"></div>
+    </section>
+
+    <section class="col diff-col" aria-label="Diff">
+      <div class="col-head">
+        <span>Diff</span>
+        <span class="diff-meta" id="diffMeta"></span>
+      </div>
+      <pre class="diff" id="diffView"></pre>
+    </section>
+  </main>
+
+  <div class="done-screen" id="doneScreen">
+    <div>
+      <h1>Queue complete</h1>
+      <p id="doneMsg">No more commits in this session.</p>
+      <button class="btn" id="btnReload" type="button">Reload session</button>
+    </div>
+  </div>
+
+  <footer class="actionbar" id="actionbar">
+    <div class="roles" id="roleButtons">
+      <button class="role-btn" data-role="fix" type="button"><span class="key">f</span> fix</button>
+      <button class="role-btn" data-role="context" type="button"><span class="key">c</span> context</button>
+      <button class="role-btn" data-role="backport" type="button"><span class="key">b</span> backport</button>
+      <button class="role-btn" data-role="introduce" type="button"><span class="key">i</span> introduce</button>
+      <button class="role-btn" data-role="other" type="button"><span class="key">o</span> other</button>
+    </div>
+    <div class="aux">
+      <button class="role-btn" data-action="skip" type="button"><span class="key">s</span> skip</button>
+      <button class="role-btn" data-action="quit" type="button"><span class="key">q</span> quit</button>
+    </div>
+    <div class="notes-row">
+      <label for="notes">notes</label>
+      <input id="notes" type="text" placeholder="optional — required mentally for non-obvious calls" disabled />
+      <button class="btn confirm-btn" id="btnConfirm" type="button" disabled title="Enter">confirm ↵</button>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status"></div>
+
+<script>
+/* Wired to label.py --web API. Same keys/roles as the CLI. */
+const ROLE_KEYS = { f: "fix", c: "context", b: "backport", i: "introduce", o: "other" };
+
+const state = {
+  idx: 0,
+  queue: [],
+  item: null,
+  selectedRole: null,
+  sessionWritten: 0,
+  labelled: 0,
+  total: 0,
+  hintModel: "gpt-4o-mini",
+  suggestAbort: null,
+  suggestion: null,
+};
+
+const el = {
+  progressMeta: document.getElementById("progressMeta"),
+  progressFill: document.getElementById("progressFill"),
+  modeBadge: document.getElementById("modeBadge"),
+  advisoryCol: document.getElementById("advisoryCol"),
+  commitCol: document.getElementById("commitCol"),
+  diffView: document.getElementById("diffView"),
+  diffMeta: document.getElementById("diffMeta"),
+  notes: document.getElementById("notes"),
+  btnConfirm: document.getElementById("btnConfirm"),
+  btnPrev: document.getElementById("btnPrev"),
+  btnNext: document.getElementById("btnNext"),
+  toast: document.getElementById("toast"),
+  workspace: document.getElementById("workspace"),
+  actionbar: document.getElementById("actionbar"),
+  doneScreen: document.getElementById("doneScreen"),
+  doneMsg: document.getElementById("doneMsg"),
+};
+
+function shortSha(sha) {
+  return (sha || "").slice(0, 12);
+}
+
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function toast(msg) {
+  el.toast.textContent = msg;
+  el.toast.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.toast.classList.remove("show"), 1800);
+}
+
+function qkey(q) {
+  return `${q.host}|${q.repo}|${q.sha}`;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || res.statusText || "request failed");
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+function renderDiff(text) {
+  if (!text) {
+    el.diffView.innerHTML = `<div class="empty">No diff resolved for this commit.</div>`;
+    return;
+  }
+  const lines = text.split("\n");
+  let html = "";
+  let n = 0;
+  for (const line of lines) {
+    n += 1;
+    let cls = "ctx";
+    if (
+      line.startsWith("diff --git") ||
+      line.startsWith("index ") ||
+      line.startsWith("--- ") ||
+      line.startsWith("+++ ")
+    ) {
+      cls = "file";
+    } else if (line.startsWith("@@")) {
+      cls = "hunk";
+    } else if (line.startsWith("+")) {
+      cls = "add";
+    } else if (line.startsWith("-")) {
+      cls = "del";
+    }
+    html += `<div class="line ${cls}"><span class="ln">${n}</span><span class="tx">${esc(line) || " "}</span></div>`;
+  }
+  el.diffView.innerHTML = html;
+}
+
+function renderSuggestionBox(sug, status) {
+  if (status === "loading") {
+    return `<div class="suggest">
+      <h3>Suggested role</h3>
+      <p class="suggest-note">Model hint — not ground truth. Confirm from the diff.</p>
+      <div class="suggest-card loading">
+        <p class="why">Asking ${esc(state.hintModel)}…</p>
+      </div>
+    </div>`;
+  }
+  if (status === "error") {
+    return `<div class="suggest">
+      <h3>Suggested role</h3>
+      <p class="suggest-note">Model hint unavailable.</p>
+      <div class="suggest-card error">
+        <p class="why">${esc(sug?.error || "Could not load suggestion.")}</p>
+        <button type="button" class="apply" data-retry-suggest>Retry hint</button>
+      </div>
+    </div>`;
+  }
+  if (!sug) return "";
+  const key = Object.entries(ROLE_KEYS).find(([, r]) => r === sug.role)?.[0] || "?";
+  return `<div class="suggest">
+    <h3>Suggested role</h3>
+    <p class="suggest-note">Model hint — not ground truth. Confirm from the diff.${sug.model ? ` · ${esc(sug.model)}` : ""}</p>
+    <div class="suggest-card">
+      <div class="row">
+        <span class="role-pill ${esc(sug.role)}">${esc(sug.role)}</span>
+        <span class="conf">${esc(sug.confidence || "")} confidence</span>
+      </div>
+      <p class="why"><strong>Why:</strong> ${esc(sug.rationale)}</p>
+      <button type="button" class="apply" data-apply-suggestion="${esc(sug.role)}">
+        Use suggestion <kbd>${esc(key)}</kbd>
+      </button>
+    </div>
+  </div>`;
+}
+
+function wireSuggestionHandlers() {
+  const applyBtn = el.advisoryCol.querySelector("[data-apply-suggestion]");
+  if (applyBtn) {
+    applyBtn.addEventListener("click", () => {
+      const role = applyBtn.getAttribute("data-apply-suggestion");
+      setRoleSelection(role);
+      if (state.suggestion?.rationale && !el.notes.value) {
+        el.notes.value = state.suggestion.rationale;
+      }
+      toast(`prefilled → ${role}`);
+    });
+  }
+  const retry = el.advisoryCol.querySelector("[data-retry-suggest]");
+  if (retry) {
+    retry.addEventListener("click", () => fetchSuggestion());
+  }
+}
+
+function renderAdvisory(item, suggestStatus) {
+  const sugHtml = renderSuggestionBox(state.suggestion, suggestStatus);
+  const isSampler = item.source === "sampler" || item.advisory == null;
+
+  if (isSampler) {
+    el.advisoryCol.innerHTML = `
+      <div><span class="sev SAMPLE">SAMPLER</span></div>
+      <p class="adv-summary">No advisory — sampled negative</p>
+      <div class="hint"><strong>FPR arm.</strong> Sampled from repo history (not cited by a GHSA). Usually <code>other</code>; still decide from the diff.</div>
+      <dl class="kv">
+        <dt>GHSA</dt><dd>—</dd>
+        <dt>CVE</dt><dd>—</dd>
+        <dt>source</dt><dd>sampler</dd>
+        <dt>referenced</dt><dd>false</dd>
+        <dt>purpose</dt><dd>false-positive baseline</dd>
+      </dl>
+      ${sugHtml}
+    `;
+    wireSuggestionHandlers();
+    return;
+  }
+
+  const a = item.advisory;
+  const ghsaUrl = `https://github.com/advisories/${a.ghsa_id}`;
+  const cveUrl = a.cve_id ? `https://nvd.nist.gov/vuln/detail/${a.cve_id}` : null;
+  const siblings = item.siblings || [];
+
+  let sibHtml = "";
+  if (siblings.length > 1) {
+    sibHtml = `<div class="siblings">
+      <h3>Other commits in this advisory</h3>
+      <p class="sib-note">Context only — labels apply to the highlighted commit.</p>`;
+    for (const s of siblings) {
+      const isCurrent = s.sha === item.sha;
+      const pill = s.role
+        ? `<span class="role-pill ${esc(s.role)}">${esc(s.role)}</span>`
+        : isCurrent
+          ? `<span class="role-pill">labelling…</span>`
+          : `<span class="role-pill">unlabelled</span>`;
+      const now = isCurrent ? `<div class="now">now</div>` : "";
+      sibHtml += `<div class="sib${isCurrent ? " current" : ""}" aria-current="${isCurrent ? "true" : "false"}">
+        ${now}${pill}
+        <span class="ord">#${s.ordinal}/${item.n_in_advisory}</span>
+        <span class="sha">${esc(shortSha(s.sha))}</span>
+        <span class="sub">${esc(s.subject)}</span>
+      </div>`;
+    }
+    sibHtml += `</div>`;
+  }
+
+  el.advisoryCol.innerHTML = `
+    <div><span class="sev ${esc(a.severity)}">${esc(a.severity || "?")}</span></div>
+    <p class="adv-summary">${esc(a.summary)}</p>
+    <div class="hint"><strong>Orient only.</strong> Decide from the diff (revert test), not from this summary.</div>
+    <dl class="kv">
+      <dt>GHSA</dt><dd><a href="${ghsaUrl}" target="_blank" rel="noopener">${esc(a.ghsa_id)}</a></dd>
+      <dt>CVE</dt><dd>${cveUrl ? `<a href="${cveUrl}" target="_blank" rel="noopener">${esc(a.cve_id)}</a>` : "—"}</dd>
+      <dt>ecosystem</dt><dd>${esc((a.ecosystems || []).join(", ") || "—")}</dd>
+      <dt>published</dt><dd>${esc(String(a.published_at || "").slice(0, 10))}</dd>
+      <dt>this commit</dt><dd>${item.ordinal} of ${item.n_in_advisory} in advisory</dd>
+    </dl>
+    ${sibHtml}
+    ${sugHtml}
+  `;
+  wireSuggestionHandlers();
+}
+
+function renderCommit(item) {
+  const isSampler = item.source === "sampler" || item.advisory == null;
+  const chips = [`<span class="chip ${esc(item.msg_class)}">${esc(item.msg_class)}</span>`];
+  if (isSampler) chips.unshift(`<span class="chip sampler">sampler</span>`);
+  else chips.push(`<span class="chip">lag ${item.lag_days ?? "?"}d</span>`);
+  chips.push(
+    `<span class="chip">${item.parent_count} parent${item.parent_count === 1 ? "" : "s"}</span>`
+  );
+  if (item.is_merge) chips.push(`<span class="chip noise">merge</span>`);
+  for (const n of item.noise_flags || []) chips.push(`<span class="chip noise">${esc(n)}</span>`);
+
+  const existing = item.existing_label;
+  const existingHtml = existing?.role
+    ? `<div class="hint" style="margin-top:0.75rem">Existing label: <strong>${esc(existing.role)}</strong>${
+        existing.notes ? ` — ${esc(existing.notes)}` : ""
+      }</div>`
+    : "";
+
+  const ordLabel = item.n_in_advisory > 0 ? `${item.ordinal}/${item.n_in_advisory}` : "neg";
+  const links = [
+    `<a href="${esc(item.url)}" target="_blank" rel="noopener">GitHub commit</a>`,
+    `<a href="https://github.com/${esc(item.repo)}" target="_blank" rel="noopener">repository</a>`,
+  ];
+  if (item.ghsa_id) {
+    links.push(
+      `<a href="https://github.com/advisories/${esc(item.ghsa_id)}" target="_blank" rel="noopener">advisory page</a>`
+    );
+  }
+
+  const rubric = isSampler
+    ? `<div class="rubric"><strong>Quick rubric (negative)</strong>
+      <ol>
+        <li>Not GHSA-cited — default expectation is <code>other</code></li>
+        <li>Accidental real fix in the diff → <code>fix</code> (rare)</li>
+        <li>Bump / chore / release notes → <code>other</code></li>
+      </ol></div>`
+    : `<div class="rubric"><strong>Quick rubric</strong>
+      <ol>
+        <li>Revert test: would the vuln come back? yes → <code>fix</code>, no → <code>context</code></li>
+        <li>Same logical fix on another branch → <code>backport</code></li>
+        <li>Caused the flaw → <code>introduce</code></li>
+        <li>Undecidable / unrelated → <code>other</code> + note</li>
+      </ol></div>`;
+
+  el.commitCol.innerHTML = `
+    <div class="reviewing-banner">
+      <span class="tag">now</span>
+      <span class="who"><code>${esc(item.repo)}@${esc(shortSha(item.sha))}</code></span>
+      <span class="ord">${esc(ordLabel)}</span>
+    </div>
+    <h2 class="subject">${esc(item.subject)}</h2>
+    <div class="chips">${chips.join("")}</div>
+    <dl class="kv">
+      <dt>repo</dt><dd>${esc(item.repo)}</dd>
+      <dt>sha</dt><dd>${esc(item.sha)}</dd>
+      <dt>committed</dt><dd>${esc(String(item.committed_at || "").replace("T", " ").replace("Z", " UTC"))}</dd>
+      <dt>diff size</dt><dd>${item.diff_bytes ?? "?"} B</dd>
+      <dt>source</dt><dd>${esc(item.source || "ghsa")}</dd>
+    </dl>
+    <div class="links">${links.join("")}</div>
+    <div class="message">${esc(item.message || "")}</div>
+    ${rubric}
+    ${existingHtml}
+  `;
+}
+
+function updateProgress() {
+  const q = state.queue.length;
+  const pos = q ? Math.min(state.idx + 1, q) : 0;
+  const pct = state.total ? Math.round((state.labelled / state.total) * 100) : 0;
+  el.progressMeta.textContent =
+    `${pos}/${q} in queue · ${state.sessionWritten} written · ${state.labelled}/${state.total} labelled (${pct}%)`;
+  el.progressFill.style.width = `${pct}%`;
+}
+
+function setRoleSelection(role) {
+  state.selectedRole = role;
+  document.querySelectorAll(".role-btn[data-role]").forEach((btn) => {
+    btn.classList.toggle("selected", btn.dataset.role === role);
+  });
+  const ready = Boolean(role);
+  el.notes.disabled = !ready;
+  el.btnConfirm.disabled = !ready;
+  if (ready) el.notes.focus();
+  else el.notes.value = "";
+}
+
+async function fetchSuggestion() {
+  const item = state.item;
+  if (!item) return;
+  const forKey = qkey(item);
+  if (state.suggestAbort) state.suggestAbort.abort();
+  state.suggestAbort = new AbortController();
+  state.suggestion = null;
+  renderAdvisory(item, "loading");
+
+  try {
+    const sug = await api("/api/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host: item.host, repo: item.repo, sha: item.sha }),
+      signal: state.suggestAbort.signal,
+    });
+    if (!state.item || qkey(state.item) !== forKey) return;
+    state.suggestion = sug;
+    renderAdvisory(item, "ok");
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    if (!state.item || qkey(state.item) !== forKey) return;
+    state.suggestion = { error: e.message || String(e) };
+    renderAdvisory(item, "error");
+  }
+}
+
+async function loadCurrent() {
+  if (!state.queue.length || state.idx >= state.queue.length) {
+    showDone();
+    return;
+  }
+  hideDone();
+  const q = state.queue[state.idx];
+  updateProgress();
+  el.advisoryCol.innerHTML = `<p class="suggest-note">Loading…</p>`;
+  el.commitCol.innerHTML = "";
+  el.diffView.innerHTML = `<div class="empty">Loading diff…</div>`;
+  setRoleSelection(null);
+
+  try {
+    const item = await api(
+      `/api/item?host=${encodeURIComponent(q.host)}&repo=${encodeURIComponent(q.repo)}&sha=${encodeURIComponent(q.sha)}`
+    );
+    state.item = item;
+    state.suggestion = null;
+    renderAdvisory(item, "loading");
+    renderCommit(item);
+    el.diffMeta.textContent = `${item.diff_bytes ?? "?"} B · ${item.repo}`;
+    renderDiff(item.diff);
+    el.btnPrev.disabled = state.idx === 0;
+    fetchSuggestion();
+  } catch (e) {
+    el.advisoryCol.innerHTML = `<div class="suggest-card error"><p class="why">${esc(e.message)}</p></div>`;
+    toast(e.message);
+  }
+}
+
+async function confirmLabel() {
+  if (!state.selectedRole || !state.item) return;
+  const item = state.item;
+  const notes = el.notes.value.trim() || null;
+  try {
+    const res = await api("/api/label", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        host: item.host,
+        repo: item.repo,
+        sha: item.sha,
+        role: state.selectedRole,
+        notes,
+      }),
+    });
+    state.sessionWritten = res.session_written;
+    state.labelled = res.labelled;
+    toast(`→ ${state.selectedRole}`);
+    // Drop current from local queue (server already did if not --relabel).
+    const key = qkey(item);
+    state.queue = state.queue.filter((x) => qkey(x) !== key);
+    if (state.idx >= state.queue.length) state.idx = Math.max(0, state.queue.length - 1);
+    await loadCurrent();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function skip() {
+  toast("skipped");
+  advance(1);
+}
+
+function advance(delta) {
+  if (state.suggestAbort) state.suggestAbort.abort();
+  const next = state.idx + delta;
+  if (next < 0) {
+    state.idx = 0;
+    loadCurrent();
+    return;
+  }
+  if (next >= state.queue.length) {
+    showDone();
+    return;
+  }
+  state.idx = next;
+  loadCurrent();
+}
+
+function showDone() {
+  el.workspace.style.display = "none";
+  el.actionbar.style.display = "none";
+  el.doneScreen.classList.add("show");
+  el.doneMsg.textContent =
+    state.queue.length === 0
+      ? `Queue empty. Wrote ${state.sessionWritten} label(s) this session → labels.jsonl`
+      : `Done with this pass. ${state.sessionWritten} written this session.`;
+  updateProgress();
+}
+
+function hideDone() {
+  el.workspace.style.display = "";
+  el.actionbar.style.display = "";
+  el.doneScreen.classList.remove("show");
+}
+
+async function boot() {
+  try {
+    const session = await api("/api/session");
+    state.queue = session.queue || [];
+    state.total = session.total || 0;
+    state.labelled = session.labelled || 0;
+    state.sessionWritten = session.session_written || 0;
+    state.hintModel = session.hint_model || "gpt-4o-mini";
+    state.idx = 0;
+    el.modeBadge.textContent = "web";
+    if (session.role_keys) {
+      Object.assign(ROLE_KEYS, session.role_keys);
+    }
+    updateProgress();
+    if (!state.queue.length) {
+      showDone();
+      return;
+    }
+    await loadCurrent();
+  } catch (e) {
+    el.modeBadge.textContent = "error";
+    el.advisoryCol.innerHTML = `<div class="suggest-card error"><p class="why">Failed to load session: ${esc(
+      e.message
+    )}. Is label.py --web running?</p></div>`;
+  }
+}
+
+document.getElementById("roleButtons").addEventListener("click", (e) => {
+  const btn = e.target.closest(".role-btn[data-role]");
+  if (!btn) return;
+  setRoleSelection(btn.dataset.role);
+});
+
+el.actionbar.addEventListener("click", (e) => {
+  const btn = e.target.closest(".role-btn[data-action]");
+  if (!btn) return;
+  if (btn.dataset.action === "skip") skip();
+  if (btn.dataset.action === "quit") {
+    toast("quit");
+    showDone();
+  }
+});
+
+el.btnConfirm.addEventListener("click", confirmLabel);
+el.btnPrev.addEventListener("click", () => advance(-1));
+el.btnNext.addEventListener("click", skip);
+document.getElementById("btnReload").addEventListener("click", () => boot());
+
+document.addEventListener("keydown", (e) => {
+  if (e.target === el.notes) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      confirmLabel();
+    }
+    if (e.key === "Escape") {
+      setRoleSelection(null);
+      el.notes.blur();
+    }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (ROLE_KEYS[k]) {
+    e.preventDefault();
+    setRoleSelection(ROLE_KEYS[k]);
+    return;
+  }
+  if (k === "s" || k === " ") {
+    e.preventDefault();
+    skip();
+    return;
+  }
+  if (k === "q") {
+    e.preventDefault();
+    toast("quit");
+    showDone();
+    return;
+  }
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    advance(-1);
+  }
+  if (e.key === "ArrowRight") {
+    e.preventDefault();
+    skip();
+  }
+  if (e.key === "Enter" && state.selectedRole) {
+    e.preventDefault();
+    confirmLabel();
+  }
+});
+
+boot();
+</script>
+</body>
+</html>
