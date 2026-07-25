@@ -105,6 +105,39 @@ def test_load_dotenv_missing_file(tmp_path: Path) -> None:
     assert load_dotenv(tmp_path / "nope.env") == 0
 
 
+def test_sampler_plan_counts_per_repo_and_total() -> None:
+    from sample_negatives import build_negative_row, plan_counts
+
+    repos = [("github.com", f"o/r{i}") for i in range(4)]
+    # per-repo: N for every repo
+    assert plan_counts(repos, 3, None) == {r: 3 for r in repos}
+    # total: even split, remainder on the first repos, sums exactly to total
+    counts = plan_counts(repos, None, 10)
+    assert sum(counts.values()) == 10
+    assert sorted(counts.values()) == [2, 2, 3, 3]
+
+    row = build_negative_row("github.com", "o/r", "ABC123")
+    assert row["source"] == "sampler"
+    assert row["ghsa_referenced"] is False
+    assert row["role"] is None
+    assert row["ghsa_id"] is None
+    assert row["n_in_advisory"] == 0
+
+
+def test_sampler_excludes_existing_keys() -> None:
+    from sample_negatives import bundle_repos, existing_keys
+
+    commits = [
+        {"host": "github.com", "repo": "o/r", "sha": "AAA"},
+        {"host": "github.com", "repo": "o/r", "sha": "bbb"},
+        {"host": "github.com", "repo": "o/other", "sha": "ccc"},
+    ]
+    assert bundle_repos(commits) == [("github.com", "o/other"), ("github.com", "o/r")]
+    keys = existing_keys(commits)
+    assert ("github.com", "o/r", "aaa") in keys  # lowercased
+    assert ("github.com", "o/r", "bbb") in keys
+
+
 def test_summarize_by_role_none_when_unlabelled() -> None:
     results = [{"role": None, "flagged": True}, {"role": None, "flagged": False}]
     assert summarize_by_role(results) is None
