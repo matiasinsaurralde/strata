@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Local advisory-database clone (symlink)
+advisory-database
+
 # C extensions
 *.so
 

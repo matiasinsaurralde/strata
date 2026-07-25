@@ -8,7 +8,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
-ADVISORY_DATABASE = Path("/Users/matias/go/src/github.com/github/advisory-database")
+ADVISORY_DATABASE = Path("advisory-database")
 # Random sample size. Set to 0 to take every matching advisory (no limit).
 SAMPLE_SIZE = 0
 # Ecosystem filter (e.g. "Go", "npm"). Set to None to disable.
