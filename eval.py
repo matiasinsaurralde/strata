@@ -159,19 +159,32 @@ class EndpointConfig:
 Classifier = Callable[[str], bool]
 
 
+def _is_next_gen(model: str) -> bool:
+    """gpt-5+ and o-series use max_completion_tokens and reject temperature!=1."""
+    m = model.lower()
+    return m.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")) or m.startswith("gpt-5.")
+
+
 def openai_classify(cfg: EndpointConfig, diff_text: str) -> bool:
-    """One /chat/completions call, temperature 0, strict YES/NO parse."""
-    body = json.dumps(
-        {
-            "model": cfg.model,
-            "temperature": 0,
-            "max_tokens": 4,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": USER_PROMPT_TEMPLATE.format(diff=diff_text)},
-            ],
-        }
-    ).encode("utf-8")
+    """One /chat/completions call, strict YES/NO parse.
+
+    Newer models (gpt-5+/o-series) rename max_tokens -> max_completion_tokens and
+    only accept the default temperature, so branch on the model family. They may
+    also emit reasoning tokens, so give them more headroom before the answer.
+    """
+    payload_obj: dict[str, Any] = {
+        "model": cfg.model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": USER_PROMPT_TEMPLATE.format(diff=diff_text)},
+        ],
+    }
+    if _is_next_gen(cfg.model):
+        payload_obj["max_completion_tokens"] = 2048  # room for reasoning + answer
+    else:
+        payload_obj["temperature"] = 0
+        payload_obj["max_tokens"] = 4
+    body = json.dumps(payload_obj).encode("utf-8")
     req = urllib.request.Request(
         f"{cfg.base_url}/chat/completions",
         data=body,
