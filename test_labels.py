@@ -347,3 +347,62 @@ def test_stage2_candidate_join_and_metrics(tmp_path: Path) -> None:
     e2e = end_to_end(s1_fix_recall=0.9, s1_sampler_fpr=0.1, s2=summary)
     assert e2e["e2e_recall"] == 0.45  # 0.9 * 0.5
     assert e2e["e2e_fpr"] == 0.05  # 0.1 * 0.5 remaining
+
+
+def test_classify_cache_roundtrip(tmp_path: Path) -> None:
+    from eval import ClassifyCache, cache_entry_key
+
+    k1 = cache_entry_key("sha256:abc", "gpt-4o-mini", "o/r", "AaAa")
+    k2 = cache_entry_key("sha256:abc", "gpt-4o-mini", "o/r", "aaaa")
+    k3 = cache_entry_key("sha256:abd", "gpt-4o-mini", "o/r", "aaaa")
+    assert k1 == k2  # sha case-normalized
+    assert k1 != k3  # prompt hash matters
+
+    cache = ClassifyCache(tmp_path / "c", enabled=True)
+    assert cache.get("sha256:abc", "gpt-4o-mini", "o/r", "aaaa") is None
+    cache.put("sha256:abc", "gpt-4o-mini", "o/r", "aaaa", True)
+    assert cache.get("sha256:abc", "gpt-4o-mini", "o/r", "AAAA") is True
+
+    # Reload from disk
+    cache2 = ClassifyCache(tmp_path / "c", enabled=True)
+    assert cache2.get("sha256:abc", "gpt-4o-mini", "o/r", "aaaa") is True
+
+    # Disabled cache never hits
+    off = ClassifyCache(tmp_path / "c", enabled=False)
+    assert off.get("sha256:abc", "gpt-4o-mini", "o/r", "aaaa") is None
+
+    seeded = cache2.seed_from_rows(
+        [
+            {"repo": "o/r", "sha": "bbbb", "flagged": False},
+            {"repo": "o/r", "sha": "cccc", "flagged": None, "error": "boom"},
+            {"repo": "o/r", "sha": "dddd", "flagged": True, "skipped_oversize": True},
+        ],
+        prompt_hash_s="sha256:abc",
+        model="gpt-4o-mini",
+    )
+    assert seeded == 1
+    assert cache2.get("sha256:abc", "gpt-4o-mini", "o/r", "bbbb") is False
+    assert cache2.get("sha256:abc", "gpt-4o-mini", "o/r", "cccc") is None
+
+
+def test_retry_errors_helpers() -> None:
+    from eval import is_retryable_error, merge_retry_results
+
+    assert is_retryable_error({"error": "HTTP 429", "flagged": None})
+    assert not is_retryable_error(
+        {"error": "skipped_oversize:…", "skipped_oversize": True, "flagged": None}
+    )
+    assert not is_retryable_error({"flagged": True, "error": None})
+
+    previous = [
+        {"repo": "o/r", "sha": "aaa", "flagged": True},
+        {"repo": "o/r", "sha": "BBB", "flagged": None, "error": "timeout"},
+        {"repo": "o/r", "sha": "ccc", "flagged": False},
+    ]
+    refreshed = [
+        {"repo": "o/r", "sha": "bbb", "flagged": True, "error": None},
+    ]
+    merged = merge_retry_results(previous, refreshed)
+    assert merged[0]["flagged"] is True
+    assert merged[1]["flagged"] is True and merged[1]["error"] is None
+    assert merged[2]["flagged"] is False

@@ -18,6 +18,7 @@ Usage:
         --stage1 results/first.json results/fpr.json \\
         --out results/s2b.json
 
+    python stage2.py --retry-errors results/s2b.json --variant b -j 4
     python stage2.py --compare results/s2a.json results/s2b.json
 """
 
@@ -34,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from eval import (
+    CLASSIFY_CACHE_DIR,
     COMMITS_PATH,
     DEFAULT_PARALLEL,
     DIFF_SKIP_MAX_BYTES,
@@ -42,10 +44,13 @@ from eval import (
     MANIFEST_PATH,
     MAX_PARALLEL,
     NONFIX_ROLES,
+    ClassifyCache,
     EndpointConfig,
     RateLimitGate,
     _PRINT_LOCK,
+    is_retryable_error,
     load_dotenv,
+    merge_retry_results,
     openai_chat_completion,
     parse_yes_no,
     pct,
@@ -160,12 +165,15 @@ def classify_s2(
     variant: str,
     parallel: int,
     max_diff_bytes: int,
+    cache: ClassifyCache | None = None,
+    prompt_hash_s: str | None = None,
 ) -> list[dict[str, Any]]:
     meta = VARIANTS[variant]
     include_message = bool(meta["include_message"])
     gate = RateLimitGate()
     total = len(targets)
     results: list[dict[str, Any] | None] = [None] * total
+    p_hash = prompt_hash_s or s2_prompt_hash(variant)
 
     def one(i: int, row: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         diff_path = GHSA_COMMITS_DIR / row["diff_path"]
@@ -180,6 +188,7 @@ def classify_s2(
             "diff_bytes": row.get("diff_bytes"),
             "stage1_flagged": True,
             "skipped_oversize": False,
+            "cache_hit": False,
             "flagged": None,
             "error": None,
         }
@@ -191,6 +200,23 @@ def classify_s2(
                 print(
                     f"[{i}/{total}] SKIP {row['repo']} {str(row['sha'])[:12]} "
                     f"({skip_reason})",
+                    flush=True,
+                )
+            return i - 1, rec
+
+        cached = (
+            cache.get(p_hash, cfg.model, str(row.get("repo") or ""), str(row.get("sha") or ""))
+            if cache is not None
+            else None
+        )
+        if cached is not None:
+            rec["flagged"] = cached
+            rec["cache_hit"] = True
+            mark = "YES" if cached else "no "
+            with _PRINT_LOCK:
+                print(
+                    f"[{i}/{total}] {mark} {row['repo']} {str(row['sha'])[:12]} "
+                    f"(cache hit, role={row.get('role')}, source={row.get('source')})",
                     flush=True,
                 )
             return i - 1, rec
@@ -213,6 +239,15 @@ def classify_s2(
                     flush=True,
                 )
             return i - 1, rec
+
+        if cache is not None:
+            cache.put(
+                p_hash,
+                cfg.model,
+                str(row.get("repo") or ""),
+                str(row.get("sha") or ""),
+                bool(rec["flagged"]),
+            )
 
         mark = "YES" if rec["flagged"] else "no "
         with _PRINT_LOCK:
@@ -429,6 +464,27 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--parallel", "-j", type=int, default=DEFAULT_PARALLEL)
     parser.add_argument("--max-diff-bytes", type=int, default=DIFF_SKIP_MAX_BYTES)
+    parser.add_argument(
+        "--retry-errors",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "re-score only API/network error rows from a prior stage-2 result JSON; "
+            "merge into that file unless --out is set"
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="disable on-disk classify cache",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=CLASSIFY_CACHE_DIR,
+        help=f"classify cache directory (default {CLASSIFY_CACHE_DIR})",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument(
@@ -453,21 +509,66 @@ def main() -> None:
         sys.exit("--max-diff-bytes must be >= 1")
 
     load_dotenv(args.env_file)
-    for path in args.stage1:
-        if not path.exists():
-            sys.exit(f"stage-1 result not found: {path}")
 
     commits = read_jsonl(COMMITS_PATH)
     if not commits:
         sys.exit(f"No commits at {COMMITS_PATH}")
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8")) if MANIFEST_PATH.exists() else {}
+    commit_by_key = {
+        (str(c.get("repo") or ""), str(c.get("sha") or "").lower()): c for c in commits
+    }
 
-    stage1_yes = load_stage1_yes(args.stage1)
-    targets = build_s2_targets(commits, stage1_yes)
-    if args.limit:
-        targets = targets[: args.limit]
-    if not targets:
-        sys.exit("No stage-1 YES candidates joined to the bundle.")
+    prev_result: dict[str, Any] | None = None
+    if args.retry_errors is not None:
+        if not args.retry_errors.exists():
+            sys.exit(f"--retry-errors file not found: {args.retry_errors}")
+        prev_result = json.loads(args.retry_errors.read_text(encoding="utf-8"))
+        prev_cfg = prev_result.get("config") or {}
+        prev_vk = prev_cfg.get("variant_key")
+        if prev_vk and prev_vk != args.variant:
+            print(
+                f"note: --retry-errors file variant_key={prev_vk}; "
+                f"using --variant {args.variant} (prompt must match prior run)"
+            )
+        error_rows = [
+            r for r in (prev_result.get("commits") or []) if is_retryable_error(r)
+        ]
+        targets = []
+        missing = 0
+        for r in error_rows:
+            key = (str(r.get("repo") or ""), str(r.get("sha") or "").lower())
+            full = commit_by_key.get(key)
+            if full is None:
+                missing += 1
+                continue
+            targets.append(full)
+        if missing:
+            print(f"warning: {missing} error row(s) not found in {COMMITS_PATH}")
+        if args.out is None:
+            args.out = args.retry_errors
+        if not targets:
+            print(f"No retryable errors in {args.retry_errors} (oversize skips are left alone).")
+            return
+        # Keep stage1 file list from prior result for e2e headlines when possible.
+        if prev_cfg.get("stage1_files") and args.stage1 == [
+            Path("results/first.json"),
+            Path("results/fpr.json"),
+        ]:
+            args.stage1 = [Path(p) for p in prev_cfg["stage1_files"]]
+    else:
+        for path in args.stage1:
+            if not path.exists():
+                sys.exit(f"stage-1 result not found: {path}")
+        stage1_yes = load_stage1_yes(args.stage1)
+        targets = build_s2_targets(commits, stage1_yes)
+        if args.limit:
+            targets = targets[: args.limit]
+        if not targets:
+            sys.exit("No stage-1 YES candidates joined to the bundle.")
+
+    for path in args.stage1:
+        if not path.exists():
+            sys.exit(f"stage-1 result not found: {path}")
 
     meta = VARIANTS[args.variant]
     if args.dry_run:
@@ -476,17 +577,29 @@ def main() -> None:
                 f"[{i}/{len(targets)}] would adjudicate {row['repo']} {str(row['sha'])[:12]} "
                 f"(role={row.get('role')}, source={row.get('source')})"
             )
+        retry_note = f", --retry-errors {args.retry_errors}" if args.retry_errors else ""
         print(
-            f"\nDry run: {len(targets)} stage-1 YES candidate(s), "
-            f"variant={meta['id']} ({meta['description']})."
+            f"\nDry run: {len(targets)} candidate(s), "
+            f"variant={meta['id']} ({meta['description']}){retry_note}."
         )
         return
 
     cfg = EndpointConfig.from_env()
+    p_hash = s2_prompt_hash(args.variant)
+    cache = ClassifyCache(args.cache_dir, enabled=not args.no_cache)
+    if prev_result is not None:
+        seeded = cache.seed_from_rows(
+            prev_result.get("commits") or [], prompt_hash_s=p_hash, model=cfg.model
+        )
+        if seeded:
+            print(f"Seeded classify cache with {seeded} prior successful answer(s).")
+
     workers = max(1, min(args.parallel, len(targets), MAX_PARALLEL))
+    cache_note = "cache=off" if args.no_cache else f"cache={args.cache_dir}"
+    retry_note = f" retry_errors={args.retry_errors}" if args.retry_errors else ""
     print(
-        f"Stage-2 {meta['id']} on {len(targets)} stage-1 YES(s) "
-        f"parallel={workers} model={cfg.model}…"
+        f"Stage-2 {meta['id']} on {len(targets)} candidate(s) "
+        f"parallel={workers} {cache_note}{retry_note} model={cfg.model}…"
     )
     try:
         results = classify_s2(
@@ -495,13 +608,19 @@ def main() -> None:
             variant=args.variant,
             parallel=workers,
             max_diff_bytes=args.max_diff_bytes,
+            cache=cache,
+            prompt_hash_s=p_hash,
         )
     except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as exc:
         sys.exit(str(exc))
 
+    if prev_result is not None:
+        results = merge_retry_results(prev_result.get("commits") or [], results)
+
     summary = summarize_s2(results)
     s1_r, s1_fpr = load_stage1_headlines(args.stage1)
     e2e = end_to_end(s1_fix_recall=s1_r, s1_sampler_fpr=s1_fpr, s2=summary)
+    n_cache = sum(1 for r in results if r.get("cache_hit"))
 
     result: dict[str, Any] = {
         "kind": "stage2",
@@ -512,22 +631,26 @@ def main() -> None:
             "variant": meta["id"],
             "variant_key": args.variant,
             "description": meta["description"],
-            "prompt_hash": s2_prompt_hash(args.variant),
+            "prompt_hash": p_hash,
             "message_condition": meta["message_condition"],
             "temperature": 0,
             "parallel": workers,
             "max_diff_bytes": args.max_diff_bytes,
             "stage1_files": [str(p) for p in args.stage1],
+            "cache": not args.no_cache,
+            "cache_dir": str(args.cache_dir),
+            "retry_errors": str(args.retry_errors) if args.retry_errors else None,
         },
         "corpus": {
             "dir": str(GHSA_COMMITS_DIR),
             "schema_version": manifest.get("schema_version"),
             "built_at": manifest.get("built_at"),
             "labels_applied": manifest.get("labels_applied"),
-            "stage1_yes_candidates": len(targets),
+            "stage1_yes_candidates": len(results) if prev_result else len(targets),
             "classified": summary["candidates_scored"],
             "skipped_oversize": summary["skipped_oversize"],
             "errors": summary["errors"],
+            "cache_hits": n_cache,
         },
         "stage2": summary,
         "end_to_end": e2e,
@@ -535,6 +658,8 @@ def main() -> None:
     }
 
     print_s2_summary(args.variant, summary, e2e)
+    if n_cache:
+        print(f"(cache hits this merge: {n_cache})")
 
     out = args.out
     if out:

@@ -35,6 +35,8 @@ Usage:
     python eval.py --parallel 8            # concurrent API calls (default 8)
     python eval.py --arm fpr               # labelled non-fix commits (FPR arm)
     python eval.py --max-diff-bytes 500000 # raise oversize skip for bigger-context models
+    python eval.py --retry-errors results/first.json  # re-score API failures only
+    python eval.py --no-cache              # ignore/disable on-disk classify cache
     python eval.py --dry-run               # no API calls; show what would run
 """
 
@@ -78,6 +80,9 @@ MAX_BACKOFF_S = 120.0
 # commits (e.g. minio/minio@7c14cdb). Larger-context models can raise this via
 # --max-diff-bytes; we keep the full raw diff on disk either way (no corpus filter).
 DIFF_SKIP_MAX_BYTES = 200_000
+# Successful YES/NO answers keyed by (prompt_hash, model, repo, sha). Errors are
+# never cached so --retry-errors can refill holes. Directory is gitignored via .cache.
+CLASSIFY_CACHE_DIR = Path(".cache/classify")
 
 # --- The classifier prompt. A plain string so it ports to Go byte-for-byte. ---
 # Diff-only. Strict yes/no. Keep this stable; its sha256 stamps every result.
@@ -144,6 +149,105 @@ def prompt_hash() -> str:
     h.update(b"\x00")
     h.update(USER_PROMPT_TEMPLATE.encode("utf-8"))
     return "sha256:" + h.hexdigest()
+
+
+def cache_entry_key(prompt_hash_s: str, model: str, repo: str, sha: str) -> str:
+    raw = f"{prompt_hash_s}\0{model}\0{repo}\0{str(sha).lower()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+class ClassifyCache:
+    """File-backed YES/NO cache. Thread-safe. Does not store errors or skips."""
+
+    def __init__(self, root: Path = CLASSIFY_CACHE_DIR, *, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.root = root
+        self._path = root / "entries.jsonl"
+        self._lock = threading.Lock()
+        self._mem: dict[str, bool] = {}
+        if enabled:
+            root.mkdir(parents=True, exist_ok=True)
+            self._load()
+
+    def _load(self) -> None:
+        if not self._path.exists():
+            return
+        with self._path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                key = row.get("key")
+                if key and isinstance(row.get("flagged"), bool):
+                    self._mem[str(key)] = bool(row["flagged"])
+
+    def get(self, prompt_hash_s: str, model: str, repo: str, sha: str) -> bool | None:
+        if not self.enabled:
+            return None
+        key = cache_entry_key(prompt_hash_s, model, repo, sha)
+        with self._lock:
+            return self._mem.get(key)
+
+    def put(self, prompt_hash_s: str, model: str, repo: str, sha: str, flagged: bool) -> None:
+        if not self.enabled:
+            return
+        key = cache_entry_key(prompt_hash_s, model, repo, sha)
+        flagged_b = bool(flagged)
+        with self._lock:
+            if key in self._mem and self._mem[key] == flagged_b:
+                return
+            self._mem[key] = flagged_b
+            rec = {
+                "key": key,
+                "prompt_hash": prompt_hash_s,
+                "model": model,
+                "repo": repo,
+                "sha": str(sha).lower(),
+                "flagged": flagged_b,
+                "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            with self._path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    def seed_from_rows(
+        self, rows: list[dict[str, Any]], *, prompt_hash_s: str, model: str
+    ) -> int:
+        """Load successful flagged rows into the cache. Returns number newly stored."""
+        n = 0
+        for row in rows:
+            if not isinstance(row.get("flagged"), bool) or row.get("skipped_oversize"):
+                continue
+            repo = str(row.get("repo") or "")
+            sha = str(row.get("sha") or "")
+            if not repo or not sha:
+                continue
+            before = self.get(prompt_hash_s, model, repo, sha)
+            self.put(prompt_hash_s, model, repo, sha, bool(row["flagged"]))
+            if before is None:
+                n += 1
+        return n
+
+def is_retryable_error(row: dict[str, Any]) -> bool:
+    """True for API/network failures — not oversize skips."""
+    return bool(row.get("error")) and not row.get("skipped_oversize") and row.get("flagged") is None
+
+
+def merge_retry_results(
+    previous: list[dict[str, Any]], refreshed: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Replace previous rows with refreshed ones matched by (repo, sha)."""
+    by_key = {
+        (str(r.get("repo")), str(r.get("sha") or "").lower()): r for r in refreshed
+    }
+    out: list[dict[str, Any]] = []
+    for row in previous:
+        key = (str(row.get("repo")), str(row.get("sha") or "").lower())
+        out.append(by_key.get(key, row))
+    return out
 
 
 def diff_leaks_disclosure(diff_text: str) -> bool:
@@ -434,11 +538,18 @@ def classify_targets(
     *,
     parallel: int,
     max_diff_bytes: int = DIFF_SKIP_MAX_BYTES,
+    cache: ClassifyCache | None = None,
+    prompt_hash_s: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Classify each target; preserve input order. parallel=1 is sequential."""
+    """Classify each target; preserve input order. parallel=1 is sequential.
+
+    Successful YES/NO answers are stored in ``cache`` (when provided). Errors and
+    oversize skips are never cached.
+    """
     gate = RateLimitGate()
     total = len(targets)
     results: list[dict[str, Any] | None] = [None] * total
+    p_hash = prompt_hash_s or prompt_hash()
 
     def one(i: int, row: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         diff_path = GHSA_COMMITS_DIR / row["diff_path"]
@@ -454,6 +565,7 @@ def classify_targets(
             "diff_bytes": row.get("diff_bytes"),
             "diff_leaks_disclosure": leaks,
             "skipped_oversize": False,
+            "cache_hit": False,
             "flagged": None,
             "error": None,
         }
@@ -469,6 +581,24 @@ def classify_targets(
                 )
             return i - 1, rec
 
+        cached = (
+            cache.get(p_hash, cfg.model, str(row.get("repo") or ""), str(row.get("sha") or ""))
+            if cache is not None
+            else None
+        )
+        if cached is not None:
+            rec["flagged"] = cached
+            rec["cache_hit"] = True
+            mark = "YES" if cached else "no "
+            with _PRINT_LOCK:
+                print(
+                    f"[{i}/{total}] {mark} {row['repo']} {str(row['sha'])[:12]} "
+                    f"(cache hit, msg_class={row.get('msg_class')}"
+                    f"{', leak' if leaks else ''})",
+                    flush=True,
+                )
+            return i - 1, rec
+
         try:
             rec["flagged"] = openai_classify(cfg, diff_text, gate)
         except Exception as exc:  # noqa: BLE001 — one bad commit must not abort the run
@@ -480,6 +610,15 @@ def classify_targets(
                     flush=True,
                 )
             return i - 1, rec
+
+        if cache is not None:
+            cache.put(
+                p_hash,
+                cfg.model,
+                str(row.get("repo") or ""),
+                str(row.get("sha") or ""),
+                bool(rec["flagged"]),
+            )
 
         mark = "YES" if rec["flagged"] else "no "
         with _PRINT_LOCK:
@@ -713,6 +852,27 @@ def main() -> None:
             f"(default {DIFF_SKIP_MAX_BYTES}; tuned for gpt-4o-mini 128k context)"
         ),
     )
+    parser.add_argument(
+        "--retry-errors",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "re-score only API/network error rows from a prior result JSON "
+            "(skips oversize); merge into that file unless --out is set"
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="disable on-disk classify cache (.cache/classify)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=CLASSIFY_CACHE_DIR,
+        help=f"classify cache directory (default {CLASSIFY_CACHE_DIR})",
+    )
     parser.add_argument("--dry-run", action="store_true", help="no API calls")
     parser.add_argument("--env-file", type=Path, default=Path(".env"), help="dotenv path")
     args = parser.parse_args()
@@ -730,16 +890,48 @@ def main() -> None:
     if not commits:
         sys.exit(f"No commits at {COMMITS_PATH}. Run main.py first.")
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8")) if MANIFEST_PATH.exists() else {}
+    commit_by_key = {
+        (str(c.get("repo") or ""), str(c.get("sha") or "").lower()): c for c in commits
+    }
 
-    targets = select_targets(commits, args.arm)
-    if args.limit:
-        targets = targets[: args.limit]
-    if not targets:
-        sys.exit(
-            f"No targets for --arm {args.arm}. "
-            "For fpr: need labelled non-fix roles in commits.jsonl "
-            "(run main.py --apply-labels-only after labelling)."
-        )
+    prev_result: dict[str, Any] | None = None
+    if args.retry_errors is not None:
+        if not args.retry_errors.exists():
+            sys.exit(f"--retry-errors file not found: {args.retry_errors}")
+        prev_result = json.loads(args.retry_errors.read_text(encoding="utf-8"))
+        prev_arm = prev_result.get("kind") or (prev_result.get("config") or {}).get("arm")
+        if prev_arm in ("recall", "fpr") and prev_arm != args.arm:
+            print(f"note: --retry-errors file kind={prev_arm}; using --arm {prev_arm}")
+            args.arm = prev_arm
+        error_rows = [
+            r for r in (prev_result.get("commits") or []) if is_retryable_error(r)
+        ]
+        targets = []
+        missing = 0
+        for r in error_rows:
+            key = (str(r.get("repo") or ""), str(r.get("sha") or "").lower())
+            full = commit_by_key.get(key)
+            if full is None:
+                missing += 1
+                continue
+            targets.append(full)
+        if missing:
+            print(f"warning: {missing} error row(s) not found in {COMMITS_PATH}")
+        if args.out is None:
+            args.out = args.retry_errors
+        if not targets:
+            print(f"No retryable errors in {args.retry_errors} (oversize skips are left alone).")
+            return
+    else:
+        targets = select_targets(commits, args.arm)
+        if args.limit:
+            targets = targets[: args.limit]
+        if not targets:
+            sys.exit(
+                f"No targets for --arm {args.arm}. "
+                "For fpr: need labelled non-fix roles in commits.jsonl "
+                "(run main.py --apply-labels-only after labelling)."
+            )
 
     if args.dry_run:
         n_would_skip = 0
@@ -754,22 +946,40 @@ def main() -> None:
                 f"(role={row.get('role')}, source={row.get('source')}, "
                 f"{row.get('diff_bytes')} B)"
             )
+        retry_note = f", --retry-errors {args.retry_errors}" if args.retry_errors else ""
         print(
             f"\nDry run: {len(targets)} commit(s), {n_would_skip} oversize skip "
             f"(--arm {args.arm}, --parallel {args.parallel}, "
-            f"--max-diff-bytes {args.max_diff_bytes})."
+            f"--max-diff-bytes {args.max_diff_bytes}{retry_note})."
         )
         return
 
     cfg = EndpointConfig.from_env()
+    p_hash = prompt_hash()
+    cache = ClassifyCache(args.cache_dir, enabled=not args.no_cache)
+    if prev_result is not None:
+        seeded = cache.seed_from_rows(
+            prev_result.get("commits") or [], prompt_hash_s=p_hash, model=cfg.model
+        )
+        if seeded:
+            print(f"Seeded classify cache with {seeded} prior successful answer(s).")
+
     workers = max(1, min(args.parallel, len(targets) or 1, MAX_PARALLEL))
+    retry_note = f" retry_errors={args.retry_errors}" if args.retry_errors else ""
+    cache_note = "cache=off" if args.no_cache else f"cache={args.cache_dir}"
     print(
         f"Classifying {len(targets)} commit(s) arm={args.arm} parallel={workers} "
-        f"max_diff_bytes={args.max_diff_bytes} (model={cfg.model})…"
+        f"max_diff_bytes={args.max_diff_bytes} {cache_note}{retry_note} "
+        f"(model={cfg.model})…"
     )
     try:
         results = classify_targets(
-            targets, cfg, parallel=workers, max_diff_bytes=args.max_diff_bytes
+            targets,
+            cfg,
+            parallel=workers,
+            max_diff_bytes=args.max_diff_bytes,
+            cache=cache,
+            prompt_hash_s=p_hash,
         )
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -781,9 +991,13 @@ def main() -> None:
     except RuntimeError as exc:
         sys.exit(str(exc))
 
+    if prev_result is not None:
+        results = merge_retry_results(prev_result.get("commits") or [], results)
+
     n_skip = sum(1 for r in results if r.get("skipped_oversize"))
     n_err = sum(1 for r in results if r.get("error") and not r.get("skipped_oversize"))
     n_scored = sum(1 for r in results if r.get("flagged") is not None)
+    n_cache = sum(1 for r in results if r.get("cache_hit"))
 
     result: dict[str, Any] = {
         "kind": args.arm,
@@ -791,12 +1005,15 @@ def main() -> None:
         "config": {
             "model": cfg.model,
             "base_url": cfg.base_url,
-            "prompt_hash": prompt_hash(),
+            "prompt_hash": p_hash,
             "message_condition": "M2_none",
             "temperature": 0,
             "parallel": workers,
             "arm": args.arm,
             "max_diff_bytes": args.max_diff_bytes,
+            "cache": not args.no_cache,
+            "cache_dir": str(args.cache_dir),
+            "retry_errors": str(args.retry_errors) if args.retry_errors else None,
         },
         "corpus": {
             "dir": str(GHSA_COMMITS_DIR),
@@ -808,19 +1025,21 @@ def main() -> None:
             "classified": n_scored,
             "skipped_oversize": n_skip,
             "errors": n_err,
+            "cache_hits": n_cache,
         },
         "commits": results,
     }
 
     print("\n" + "=" * 60)
     print(
-        f"model={cfg.model}  prompt={prompt_hash()[:19]}…  "
+        f"model={cfg.model}  prompt={p_hash[:19]}…  "
         f"parallel={workers}  arm={args.arm}  max_diff_bytes={args.max_diff_bytes}"
     )
     print(f"scored {len(results)} commit(s)")
-    if n_skip or n_err:
+    if n_skip or n_err or n_cache:
         print(
-            f"  ({n_scored} classified, {n_skip} skipped oversize, {n_err} errors)"
+            f"  ({n_scored} classified, {n_skip} skipped oversize, "
+            f"{n_err} errors, {n_cache} cache hits)"
         )
     print("-" * 60)
 
