@@ -288,3 +288,62 @@ def test_summarize_recall_quiet_clean_excludes_leaks() -> None:
     assert qc["excluded_leaking"] == 1
     assert qc["flagged"] == 0  # only the clean (unflagged) one remains
     assert qc["flag_rate"] == 0.0
+
+
+def test_stage2_candidate_join_and_metrics(tmp_path: Path) -> None:
+    from stage2 import (
+        build_s2_targets,
+        build_user_content,
+        end_to_end,
+        load_stage1_yes,
+        s2_prompt_hash,
+        summarize_s2,
+    )
+
+    assert s2_prompt_hash("a") != s2_prompt_hash("b")
+    assert "Diff" in build_user_content({"message": "x"}, "diffbody", include_message=False)
+    with_msg = build_user_content({"message": "fix auth"}, "diffbody", include_message=True)
+    assert "fix auth" in with_msg and "diffbody" in with_msg
+
+    s1 = tmp_path / "s1.json"
+    s1.write_text(
+        json.dumps(
+            {
+                "kind": "recall",
+                "commits": [
+                    {"repo": "o/r", "sha": "aaa", "flagged": True, "role": "fix"},
+                    {"repo": "o/r", "sha": "zzz", "flagged": False, "role": "fix"},
+                    {"repo": "o/r", "sha": "bbb", "flagged": True, "role": "other"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    stage1_yes = load_stage1_yes([s1])
+    assert set(stage1_yes) == {("o/r", "aaa"), ("o/r", "bbb")}
+
+    commits = [
+        {"repo": "o/r", "sha": "aaa", "diff_path": "d/a.diff", "role": "fix", "source": "ghsa"},
+        {"repo": "o/r", "sha": "bbb", "diff_path": "d/b.diff", "role": "other", "source": "sampler"},
+        {"repo": "o/r", "sha": "ccc", "diff_path": "d/c.diff", "role": "fix", "source": "ghsa"},
+    ]
+    targets = build_s2_targets(commits, stage1_yes)
+    assert len(targets) == 2
+    assert {t["sha"] for t in targets} == {"aaa", "bbb"}
+
+    summary = summarize_s2(
+        [
+            {"role": "fix", "flagged": True},
+            {"role": "fix", "flagged": False},
+            {"role": "other", "flagged": False},
+            {"role": "other", "flagged": True},
+        ]
+    )
+    assert summary["stage1_true_positives"]["survived"] == 1
+    assert summary["stage1_true_positives"]["survival_rate"] == 0.5
+    assert summary["stage1_false_positives"]["killed"] == 1
+    assert summary["stage1_false_positives"]["kill_rate"] == 0.5
+
+    e2e = end_to_end(s1_fix_recall=0.9, s1_sampler_fpr=0.1, s2=summary)
+    assert e2e["e2e_recall"] == 0.45  # 0.9 * 0.5
+    assert e2e["e2e_fpr"] == 0.05  # 0.1 * 0.5 remaining

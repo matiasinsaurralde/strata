@@ -322,13 +322,28 @@ def is_request_too_large(detail: str) -> bool:
     return False
 
 
-def openai_chat_completion(cfg: EndpointConfig, diff_text: str, gate: RateLimitGate) -> str:
-    """POST /chat/completions; return message content. Honours 429 + RL headers."""
+def openai_chat_completion(
+    cfg: EndpointConfig,
+    gate: RateLimitGate,
+    *,
+    diff_text: str | None = None,
+    user_content: str | None = None,
+    system_prompt: str | None = None,
+) -> str:
+    """POST /chat/completions; return message content. Honours 429 + RL headers.
+
+    Pass either ``diff_text`` (stage-1 user template) or a fully built ``user_content``.
+    """
+    system = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+    if user_content is None:
+        if diff_text is None:
+            raise ValueError("openai_chat_completion requires diff_text or user_content")
+        user_content = USER_PROMPT_TEMPLATE.format(diff=diff_text)
     payload_obj: dict[str, Any] = {
         "model": cfg.model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_PROMPT_TEMPLATE.format(diff=diff_text)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
         ],
     }
     if _is_next_gen(cfg.model):
@@ -390,23 +405,27 @@ def openai_chat_completion(cfg: EndpointConfig, diff_text: str, gate: RateLimitG
     raise last_err
 
 
+def parse_yes_no(content: str) -> bool:
+    """Lenient parse: first YES/NO token wins; unparseable → NO (conservative)."""
+    for token in re.findall(r"[A-Z]+", content.strip().upper()):
+        if token in ("YES", "NO"):
+            return token == "YES"
+    return False
+
+
 def openai_classify(
     cfg: EndpointConfig,
     diff_text: str,
     gate: RateLimitGate | None = None,
 ) -> bool:
-    """One /chat/completions call, strict YES/NO parse.
+    """One /chat/completions call, strict YES/NO parse (stage-1 prompt).
 
     Newer models (gpt-5+/o-series) rename max_tokens -> max_completion_tokens and
     only accept the default temperature, so branch on the model family. They may
     also emit reasoning tokens, so give them more headroom before the answer.
     """
-    content = openai_chat_completion(cfg, diff_text, gate or RateLimitGate()).strip().upper()
-    # Lenient parse: first YES/NO token wins; unparseable → NO (conservative).
-    for token in re.findall(r"[A-Z]+", content):
-        if token in ("YES", "NO"):
-            return token == "YES"
-    return False
+    content = openai_chat_completion(cfg, gate or RateLimitGate(), diff_text=diff_text)
+    return parse_yes_no(content)
 
 
 def classify_targets(

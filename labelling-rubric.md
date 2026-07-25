@@ -16,18 +16,23 @@ eval scores against (`eval.py` label-aware mode).
 
 Re-ask this on **every** commit:
 
-> **"Reading only this diff, what is this commit's relationship to the security
-> vulnerability the advisory is about?"**
+> **"What is this commit's relationship to a real, pre-existing, exploitable
+> security vulnerability?"**
 
-Two words in that sentence are load-bearing:
+Ground truth is the **reality** of the commit (was it a vuln fix?), not only what
+is obvious from the diff. When the diff alone is insufficient, you **may** use
+the commit message and (for GHSA rows) the advisory to decide. Change the role
+only when that context makes the answer clear.
 
-- **only this diff** — label from the diff alone. Do **not** open the GitHub PR,
-  issue, or advisory page to decide. The classifier sees only the diff, so if you
-  label using information it never gets, your ground truth measures something the
-  model cannot see. (The advisory summary shown by `label.py` is fine for
-  orientation; the *decision* is the diff.)
-- **the vulnerability** — the target is a *real, pre-existing, exploitable*
-  vulnerability, not any code smell. Match that bar.
+- **Undecidable** even with message/advisory (e.g. a "security" dependency bump
+  with no visible in-repo exploit path) → `other`, with a short note. Do not
+  guess `fix` to tidy metrics.
+- **Stage-1 models still see the diff only.** Richer labels measure whether the
+  classifier can recover reality from a weaker view; that is intentional for the
+  cascade (triage → adjudicate).
+
+Earlier phase-1 labelling was often diff-only; contested rows have been / may be
+revisited under this rule. New labels should follow reality-with-context.
 
 ---
 
@@ -78,6 +83,10 @@ The commit that **caused** the flaw (vulnerability-contributing commit).
 None of the above: a version/dependency bump, an unrelated change, a random
 non-security commit, or **genuinely undecidable**.
 
+- **"Security" dependency / lockfile bumps** with no visible first-party exploit
+  path in this repo → `other` (note it). Do not promote to `fix` on message
+  wording alone.
+
 - Truly cannot decide? → `other` **plus a note** explaining why. Never force a
   `fix`/`context` guess to avoid `other`; an honest "undecidable" is data, a
   coin-flip is noise.
@@ -114,8 +123,9 @@ The recurring ambiguities, resolved once so you don't re-litigate them:
 
 - **Write a one-line note** on every non-obvious call (`label.py` prompts for it).
   Future-you and any second annotator need the *why*, not just the verdict.
-- **Diff-only decisions** (restated because it's the most common mistake): the
-  advisory summary orients you; the diff decides.
+- **Reality over diff-only purity.** Prefer message + advisory when needed to
+  decide `role`; leave `other` when still unclear (including security-flavoured
+  dep bumps with no in-repo path). Stage-1 eval remains diff-only *input*.
 - **Be consistent over correct-in-isolation.** A slightly-wrong rule applied
   uniformly is recoverable (shift the whole set); an inconsistent standard is not.
 - **One sitting ≤ ~100 commits.** Fatigue degrades label quality; split larger
