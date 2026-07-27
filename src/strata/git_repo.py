@@ -1,8 +1,11 @@
 """Bounded, read-only access to untrusted Git repositories.
 
-Repositories are copied into content-addressed bare mirrors.  All Git
-invocations use argument arrays, a scrubbed environment, explicit timeouts,
-and bounded output pipes.
+Remote repositories are copied into content-addressed bare mirrors.  A local
+checkout can instead be grounded in place (:class:`GitRepository` with
+``in_place=True``): its own git directory is read directly, with no clone and
+no ref writes, so a large or private repository already on disk is scanned
+without a second copy.  All Git invocations use argument arrays, a scrubbed
+environment, explicit timeouts, and bounded output pipes.
 """
 
 from __future__ import annotations
@@ -392,14 +395,17 @@ class GitRepository:
         fetch_timeout: float = DEFAULT_FETCH_TIMEOUT,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT,
         max_patch_bytes: int = DEFAULT_MAX_PATCH,
+        in_place: bool = False,
     ) -> None:
         source_arg, canonical_source, is_local = _normalise_source(source)
         self.source = source_arg
         self.canonical_source = canonical_source
         self.is_local = is_local
+        # In-place grounding only applies to a real local checkout; a remote
+        # URL has nothing on disk to read and always goes through the mirror.
+        self.in_place = bool(in_place) and is_local
         self.repository_hash = hashlib.sha256(canonical_source.encode("utf-8")).hexdigest()
         self.cache_root = Path(cache_root).expanduser().resolve()
-        self.mirror_path = self.cache_root / f"{self.repository_hash}.git"
         self.command_timeout = float(command_timeout)
         self.fetch_timeout = float(fetch_timeout)
         self.max_output_bytes = int(max_output_bytes)
@@ -414,6 +420,35 @@ class GitRepository:
             <= 0
         ):
             raise ValueError("timeouts and output limits must be positive")
+        # For a mirror the git directory is the content-addressed bare clone in
+        # the cache; when grounding in place it is the existing repository's own
+        # git directory, discovered once here and only ever read from.
+        if self.in_place:
+            self.mirror_path = self._discover_local_git_dir(source_arg)
+        else:
+            self.mirror_path = self.cache_root / f"{self.repository_hash}.git"
+
+    def _discover_local_git_dir(self, path: str) -> Path:
+        """Resolve the git directory backing an existing local checkout.
+
+        A single read-only ``rev-parse`` handles every layout: a work tree, a
+        bare repository, or a path pointing anywhere inside either all resolve
+        to the directory subsequent Git operations should target.
+        """
+        try:
+            output = self._git(
+                ["-C", path, "rev-parse", "--absolute-git-dir"],
+                max_output=64 * 1024,
+                in_mirror=False,
+            )
+        except GitRepositoryError as exc:
+            raise InvalidRepositoryPathError(
+                f"{path!r} is not inside a Git repository"
+            ) from exc
+        git_dir = Path(output.decode("utf-8", errors="strict").strip())
+        if not git_dir.is_dir():
+            raise InvalidRepositoryPathError(f"resolved git directory is absent: {git_dir}")
+        return git_dir
 
     def _base_git(self, *, in_mirror: bool = True) -> list[str]:
         args = [
@@ -507,8 +542,35 @@ class GitRepository:
                     return None
         return None
 
+    def _grounded_snapshot(self) -> RepositorySnapshot:
+        """Describe an existing local repository without mutating it.
+
+        Unlike :meth:`fetch`'s mirror path this runs no network or ref-writing
+        Git command: it only reads the current default branch and head, so the
+        scan is grounded on the checkout exactly as it sits on disk.
+        """
+        if not self.mirror_path.is_dir():
+            raise GitRepositoryError(f"local git directory is not present: {self.mirror_path}")
+        default_branch = self.default_branch()
+        head_sha = self.resolve_revision(default_branch)
+        return RepositorySnapshot(
+            source=self.source,
+            canonical_source=self.canonical_source,
+            repository_hash=self.repository_hash,
+            mirror_path=self.mirror_path,
+            default_branch=default_branch,
+            head_sha=head_sha,
+        )
+
     def fetch(self) -> RepositorySnapshot:
-        """Create or update the mirror and return its current default head."""
+        """Create or update the mirror and return its current default head.
+
+        When grounding in place (:attr:`in_place`) nothing is cloned, fetched
+        or rewritten; the existing repository is read as-is via
+        :meth:`_grounded_snapshot`.
+        """
+        if self.in_place:
+            return self._grounded_snapshot()
         if not self.mirror_path.exists():
             self._clone()
         if not self.mirror_path.is_dir():

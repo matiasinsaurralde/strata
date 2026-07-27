@@ -171,3 +171,96 @@ def test_untrusted_revision_and_path_validation(tmp_path: Path) -> None:
         from strata.git_repo import validate_path
 
         validate_path("../secret")
+
+
+def _repository_state(repository: Path) -> dict[str, str]:
+    """Everything an in-place scan must leave untouched in the user's repo."""
+    return {
+        "refs": git(repository, "for-each-ref", "--format=%(refname) %(objectname)"),
+        "head": git(repository, "rev-parse", "HEAD"),
+        "status": git(repository, "status", "--porcelain"),
+        "worktrees": git(repository, "worktree", "list", "--porcelain"),
+    }
+
+
+def test_in_place_grounds_existing_repo_without_cloning_or_mutating(
+    synthetic_repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    source, shas = synthetic_repository
+    cache = tmp_path / "cache"
+    before = _repository_state(source)
+
+    repository = GitRepository(source, cache_root=cache, in_place=True)
+    assert repository.in_place is True
+    assert repository.mirror_path.resolve() == (source / ".git").resolve()
+
+    snapshot = repository.fetch()
+    assert snapshot.default_branch == "main"
+    assert snapshot.head_sha == shas["merge"]
+    assert snapshot.mirror_path == repository.mirror_path
+
+    # Nothing was copied into the cache: the scan reads the checkout directly.
+    assert not cache.exists()
+
+    # The bounded read tools operate against the live git directory.
+    commits = {commit.sha: commit for commit in repository.enumerate_commits(last=20)}
+    assert commits[shas["root"]].is_root
+    assert commits[shas["merge"]].is_merge
+    assert repository.read_blob("HEAD", "renamed.txt").endswith(b"needle security fix\n")
+    assert [(m.path, m.line) for m in repository.search_text("HEAD", "needle")] == [
+        ("renamed.txt", 2)
+    ]
+
+    # The user's repository is byte-for-byte as it was: same refs and head, a
+    # clean tree, and no lingering worktree registrations.
+    assert _repository_state(source) == before
+
+
+def test_in_place_resolves_git_dir_from_a_subdirectory(
+    synthetic_repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    source, shas = synthetic_repository
+    nested = source / "nested" / "deep"
+    nested.mkdir(parents=True)
+    repository = GitRepository(nested, cache_root=tmp_path / "cache", in_place=True)
+    assert repository.mirror_path.resolve() == (source / ".git").resolve()
+    assert repository.fetch().head_sha == shas["merge"]
+
+
+def test_in_place_rejects_a_non_git_directory(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(InvalidRepositoryPathError):
+        GitRepository(plain, cache_root=tmp_path / "cache", in_place=True)
+
+
+def test_in_place_flag_is_ignored_for_remote_sources(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    repository = GitRepository(
+        "https://example.test/owner/repository.git",
+        cache_root=cache,
+        in_place=True,
+    )
+    assert repository.in_place is False
+    assert repository.mirror_path == cache.resolve() / f"{repository.repository_hash}.git"
+
+
+def test_in_place_reflects_new_commits_without_recloning(
+    synthetic_repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    source, shas = synthetic_repository
+    cache = tmp_path / "cache"
+    repository = GitRepository(source, cache_root=cache, in_place=True)
+    first = repository.fetch()
+    assert first.head_sha == shas["merge"]
+
+    (source / "late.txt").write_text("late\n", encoding="utf-8")
+    late = commit_all(source, "late commit")
+    second = repository.fetch()
+
+    assert second.head_sha == late
+    assert second.head_sha != first.head_sha
+    assert not cache.exists()

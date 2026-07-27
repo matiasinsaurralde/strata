@@ -31,7 +31,7 @@ from .attribution import apply as apply_attribution
 from .codex_adjudicator import CodexAdjudicator
 from .context import RepoRef, ScanStats, SecurityContext, compile_context, write_narrative
 from .contracts import InputProfile, ProviderSettingsV1
-from .git_repo import GitCommit, GitRepository
+from .git_repo import DEFAULT_FETCH_TIMEOUT, GitCommit, GitRepository
 from .llm import LLMOversizeError, ModelPricing, OpenAIChatClient, TokenUsage
 from .prefilter import PrefilterStats, prefilter_commit
 from .triage import OpenAICompatibleTriageBackend, TriageRunner
@@ -78,6 +78,10 @@ class ScanConfig:
     #: Sandbox mode when ``adjudicator="codex"``. Writes unlock semgrep,
     #: ``go vet`` and gopls; ``read-only`` is the production default.
     sandbox: str = "read-only"
+    #: Timeout, in seconds, for network Git operations (clone, fetch,
+    #: ls-remote). Mirroring a large remote can exceed the 120s default over a
+    #: slow link; raise this instead of letting the clone abort mid-transfer.
+    fetch_timeout: float = DEFAULT_FETCH_TIMEOUT
 
 
 @dataclass(slots=True)
@@ -181,9 +185,15 @@ def scan_repository(
     say = progress or (lambda _message: None)
     started = time.monotonic()
 
-    repository = GitRepository(source, cache_root=cache_root)
+    repository = GitRepository(
+        source,
+        cache_root=cache_root,
+        fetch_timeout=settings.fetch_timeout,
+        in_place=True,
+    )
     snapshot = repository.fetch()
-    say(f"mirror ready: {snapshot.head_sha[:12]} on {snapshot.default_branch}")
+    origin = "grounded on local checkout" if repository.in_place else "mirror ready"
+    say(f"{origin}: {snapshot.head_sha[:12]} on {snapshot.default_branch}")
 
     shas = repository.enumerate_shas(last=settings.last, revision=settings.revision)
     say(f"enumerated {len(shas)} commits")

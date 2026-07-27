@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .git_repo import DEFAULT_FETCH_TIMEOUT
 from .importer import Importer, ImportLimits
 from .store import Store, canonical_json
 
@@ -34,6 +35,13 @@ def _non_negative_float(value: str) -> float:
     parsed = float(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
     return parsed
 
 
@@ -247,7 +255,23 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser = commands.add_parser(
         "scan", help="compile a security context for a repository"
     )
-    scan_parser.add_argument("--repo", required=True, help="local path or remote URL")
+    scan_parser.add_argument(
+        "repo",
+        nargs="?",
+        metavar="REPO",
+        help=(
+            "repository to scan: a local path such as '.' or /path/to/repo, "
+            "which is scanned in place without cloning, or an http(s)/ssh/git "
+            "URL, which is mirrored into the cache. May also be supplied with "
+            "--repo"
+        ),
+    )
+    scan_parser.add_argument(
+        "--repo",
+        dest="repo_option",
+        metavar="REPO",
+        help="the repository, as an alternative to the positional argument",
+    )
     scan_parser.add_argument("--last", type=_positive_int, metavar="N")
     scan_parser.add_argument("--out", type=Path, default=Path("security-context.json"))
     scan_parser.add_argument("--profile", choices=("A0", "A1"), default="A0")
@@ -255,6 +279,19 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--max-cost", type=_non_negative_float, default=None)
     scan_parser.add_argument("--max-candidates", type=_non_negative_int, default=None)
     scan_parser.add_argument("--cache-root", type=Path)
+    scan_parser.add_argument(
+        "--fetch-timeout",
+        type=_positive_float,
+        default=DEFAULT_FETCH_TIMEOUT,
+        metavar="SECONDS",
+        help=(
+            "timeout for network Git operations -- the mirror clone, fetch and "
+            f"ls-remote (default: {DEFAULT_FETCH_TIMEOUT:g}). Raise this when "
+            "mirroring a large remote repository aborts with 'Git command "
+            "exceeded'. No effect on local repositories, which are scanned in "
+            "place without cloning"
+        ),
+    )
     scan_parser.add_argument(
         "--adjudicator",
         choices=("chat", "codex"),
@@ -309,25 +346,56 @@ def _limits_from_mapping(value: Mapping[str, Any]) -> ImportLimits:
     return ImportLimits(**{key: value.get(key) for key in accepted})
 
 
-def _run_scan(arguments: argparse.Namespace) -> int:
+def _scan_target(arguments: argparse.Namespace) -> str:
+    """Resolve the repository from the positional argument or ``--repo``.
+
+    Both spellings are accepted so ``scan .`` and ``scan --repo .`` behave
+    identically; giving conflicting values, or none, is an error.
+    """
+    positional = arguments.repo
+    option = arguments.repo_option
+    if positional and option and positional != option:
+        raise ValueError("specify the repository once, as a positional argument or --repo")
+    target = positional or option
+    if not target:
+        raise ValueError("scan requires a repository path or URL")
+    return target
+
+
+def _scan_config_from_arguments(arguments: argparse.Namespace) -> Any:
+    """Build a :class:`~strata.scan.ScanConfig` from parsed CLI arguments.
+
+    Kept separate from :func:`_run_scan` so the argument-to-config mapping can
+    be exercised without constructing a live model client.
+    """
     from .adjudicator import Profile
-    from .llm import LLMConfig, ModelPricing, OpenAIChatClient
-    from .scan import ScanConfig, scan_repository
+    from .llm import ModelPricing
+    from .scan import ScanConfig
+
+    return ScanConfig(
+        last=arguments.last,
+        profile=Profile.parse(arguments.profile),
+        workers=arguments.workers,
+        max_cost_usd=arguments.max_cost,
+        max_candidates=arguments.max_candidates,
+        pricing=ModelPricing(1.25, 10.0, 0.125),
+        adjudicator=arguments.adjudicator,
+        sandbox=arguments.sandbox,
+        fetch_timeout=arguments.fetch_timeout,
+    )
+
+
+def _run_scan(arguments: argparse.Namespace) -> int:
+    target = _scan_target(arguments)
+
+    from .llm import LLMConfig, OpenAIChatClient
+    from .scan import scan_repository
 
     client = OpenAIChatClient(LLMConfig.from_env())
     outcome = scan_repository(
-        arguments.repo,
+        target,
         client=client,
-        config=ScanConfig(
-            last=arguments.last,
-            profile=Profile.parse(arguments.profile),
-            workers=arguments.workers,
-            max_cost_usd=arguments.max_cost,
-            max_candidates=arguments.max_candidates,
-            pricing=ModelPricing(1.25, 10.0, 0.125),
-            adjudicator=arguments.adjudicator,
-            sandbox=arguments.sandbox,
-        ),
+        config=_scan_config_from_arguments(arguments),
         cache_root=str(arguments.cache_root or ".strata/repos"),
         progress=None if arguments.quiet else (lambda m: print(m, file=sys.stderr)),
     )
