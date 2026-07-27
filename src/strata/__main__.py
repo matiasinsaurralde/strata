@@ -319,6 +319,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit unfixed candidate sites (dual-use; withheld by default)",
     )
+    scan_parser.add_argument(
+        "--debug-report",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "also write a per-commit adjudication debug report (JSON + sibling .md) "
+            "to PATH: every finding, rejection, abstention (raw reason and model "
+            "text, garbled ones included), and any error with traceback. For manual "
+            "evaluation; does not affect the scan"
+        ),
+    )
     scan_parser.add_argument("--quiet", action="store_true")
     return parser
 
@@ -389,7 +401,7 @@ def _run_scan(arguments: argparse.Namespace) -> int:
     target = _scan_target(arguments)
 
     from .llm import LLMConfig, OpenAIChatClient
-    from .scan import scan_repository
+    from .scan import scan_repository, write_debug_report
 
     client = OpenAIChatClient(LLMConfig.from_env())
     outcome = scan_repository(
@@ -410,6 +422,10 @@ def _run_scan(arguments: argparse.Namespace) -> int:
         + "\n",
         encoding="utf-8",
     )
+    if arguments.debug_report is not None:
+        write_debug_report(outcome, arguments.debug_report)
+        if not arguments.quiet:
+            print(f"debug report written to {arguments.debug_report}", file=sys.stderr)
     print(canonical_json(outcome.funnel()))
     return 0
 

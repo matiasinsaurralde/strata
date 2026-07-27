@@ -204,7 +204,9 @@ class TestFailureDegradesToAbstention:
             def __exit__(self, *_exc):
                 return False
 
-        monkeypatch.setattr(CodexAdjudicator, "_worktree", lambda self, sha: _NullWorktree())
+        monkeypatch.setattr(
+            CodexAdjudicator, "_worktree", lambda self, sha, parent="": _NullWorktree()
+        )
         monkeypatch.setattr(
             CodexAdjudicator,
             "_run_codex",
@@ -234,7 +236,9 @@ class TestPromptAssembly:
             seen["instructions"] = instructions
             return _CodexRun(text="", elapsed_ms=1.0)
 
-        monkeypatch.setattr(CodexAdjudicator, "_worktree", lambda self, sha: _NullWorktree())
+        monkeypatch.setattr(
+            CodexAdjudicator, "_worktree", lambda self, sha, parent="": _NullWorktree()
+        )
         monkeypatch.setattr(CodexAdjudicator, "_run_codex", capture)
         adjudicator.adjudicate(
             {"commit_sha": "a" * 40, "parent_sha": "b" * 40, "affected_paths": ["context.go"]}
@@ -255,7 +259,9 @@ class TestPromptAssembly:
             def __exit__(self, *_exc):
                 return False
 
-        monkeypatch.setattr(CodexAdjudicator, "_worktree", lambda self, sha: _NullWorktree())
+        monkeypatch.setattr(
+            CodexAdjudicator, "_worktree", lambda self, sha, parent="": _NullWorktree()
+        )
         monkeypatch.setattr(
             CodexAdjudicator,
             "_run_codex",
@@ -290,7 +296,9 @@ class TestAuditTrailIsConstructible:
             def __exit__(self, *_exc):
                 return False
 
-        monkeypatch.setattr(CodexAdjudicator, "_worktree", lambda self, sha: _NullWorktree())
+        monkeypatch.setattr(
+            CodexAdjudicator, "_worktree", lambda self, sha, parent="": _NullWorktree()
+        )
         monkeypatch.setattr(
             CodexAdjudicator,
             "_run_codex",
@@ -319,7 +327,9 @@ class TestAuditTrailIsConstructible:
             def __exit__(self, *_exc):
                 return False
 
-        monkeypatch.setattr(CodexAdjudicator, "_worktree", lambda self, sha: _NullWorktree())
+        monkeypatch.setattr(
+            CodexAdjudicator, "_worktree", lambda self, sha, parent="": _NullWorktree()
+        )
         monkeypatch.setattr(
             CodexAdjudicator,
             "_run_codex",
@@ -356,7 +366,9 @@ class TestWallClockDeadline:
         def stall(*_args, **_kwargs):
             raise CodexTimeout("no answer within 1s")
 
-        monkeypatch.setattr(CodexAdjudicator, "_worktree", lambda self, sha: _NullWorktree())
+        monkeypatch.setattr(
+            CodexAdjudicator, "_worktree", lambda self, sha, parent="": _NullWorktree()
+        )
         monkeypatch.setattr(CodexAdjudicator, "_run_codex", stall)
         result = adjudicator.adjudicate({"commit_sha": "a" * 40, "parent_sha": "b" * 40})
         assert result.verdict == "ABSTAIN"

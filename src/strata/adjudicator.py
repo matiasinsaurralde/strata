@@ -273,6 +273,10 @@ class AdjudicationResult(Mapping[str, Any]):
     tool_audit: tuple[ToolAudit, ...] = ()
     validation_errors: tuple[str, ...] = ()
     limit_reason: str | None = None
+    #: Raw model output text, retained ONLY for offline debugging (e.g. inspecting a
+    #: degenerate/garbled response). Never serialised into the compiled context by
+    #: to_dict(); defaults to None so existing construction sites are unaffected.
+    raw_output: str | None = None
 
     @property
     def verdict(self) -> str:

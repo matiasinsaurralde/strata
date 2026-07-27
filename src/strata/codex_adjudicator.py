@@ -72,6 +72,14 @@ class CodexTimeout(RuntimeError):
     """One adjudication exceeded its wall-clock deadline."""
 
 
+class GitObjectUnreadable(RuntimeError):
+    """The parent commit object is not readable in the sandbox checkout.
+
+    Raised by the pre-flight check so the caller can fail to a clean, attributable
+    abstain reason rather than letting the model attempt an evidence-starved judgment.
+    """
+
+
 def codex_available() -> bool:
     try:
         import openai_codex  # noqa: F401
@@ -402,8 +410,24 @@ class CodexAdjudicator:
     # -- worktree ---------------------------------------------------------
 
     @contextmanager
-    def _worktree(self, sha: str):
-        """A disposable worktree at ``sha``, removed even on failure."""
+    def _worktree(self, sha: str, parent: str = ""):
+        """A disposable, self-contained checkout at ``sha``, removed even on failure.
+
+        Uses a standalone ``git clone --local`` rather than a linked ``git worktree``.
+        A linked worktree keeps its object store in the shared git dir, *outside* the
+        sandbox jail, so a read-only sandbox scoped to the checkout cannot read parent
+        objects (``git show <parent>``, ``git diff``, ``git log``) — which starved the
+        adjudicator of evidence and caused blind abstains. A local clone puts
+        ``.git/objects`` *inside* the checkout, so parent reads work while the sandbox
+        stays read-only and jailed.
+
+        ``git clone --local`` hardlinks objects when source and destination share a
+        filesystem, so this is cheap; across filesystems it is a fast full copy.
+
+        If ``parent`` is given, its object is verified readable before yielding; a
+        missing parent raises ``GitObjectUnreadable`` so the caller can fail to a clean,
+        attributable reason instead of letting the model flail on unreadable history.
+        """
         root = Path(tempfile.mkdtemp(prefix="strata-wt-"))
         target = root / "repo"
         git_dir = str(self.repo.mirror_path)
@@ -411,18 +435,16 @@ class CodexAdjudicator:
             subprocess.run(
                 [
                     "git",
-                    "--git-dir",
-                    git_dir,
-                    "worktree",
-                    "add",
-                    "--detach",
+                    "clone",
+                    "--local",
                     "--no-checkout",
+                    "--quiet",
+                    git_dir,
                     str(target),
-                    sha,
                 ],
                 check=True,
                 capture_output=True,
-                timeout=180,
+                timeout=300,
             )
             subprocess.run(
                 ["git", "-C", str(target), "checkout", "--force", sha],
@@ -430,13 +452,20 @@ class CodexAdjudicator:
                 capture_output=True,
                 timeout=300,
             )
+            # Pre-flight (guardrail ④): confirm the parent object is actually readable
+            # from inside this self-contained checkout before the model relies on it.
+            if parent:
+                probe = subprocess.run(
+                    ["git", "-C", str(target), "cat-file", "-e", f"{parent}^{{commit}}"],
+                    capture_output=True,
+                    timeout=60,
+                )
+                if probe.returncode != 0:
+                    raise GitObjectUnreadable(
+                        f"parent {parent[:12]} not readable in sandbox checkout"
+                    )
             yield target
         finally:
-            subprocess.run(
-                ["git", "--git-dir", git_dir, "worktree", "remove", "--force", str(target)],
-                capture_output=True,
-                timeout=120,
-            )
             shutil.rmtree(root, ignore_errors=True)
 
     # -- the run ----------------------------------------------------------
@@ -539,6 +568,9 @@ class CodexAdjudicator:
                 ),
                 validation_errors=tuple(errors),
                 limit_reason=None,
+                # Raw sandbox output, for the debug report only. Lets a garbled or
+                # non-conforming response be inspected verbatim after the fact.
+                raw_output=run.text if run else None,
             )
 
         tools = _available_tools(writes_allowed=_SANDBOX_MODES[self.sandbox])
@@ -560,7 +592,7 @@ class CodexAdjudicator:
         )
 
         try:
-            with self._worktree(sha) as worktree:
+            with self._worktree(sha, parent=parent) as worktree:
                 run = self._run_codex(worktree, instructions, task)
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or b"").decode("utf-8", "replace")[:200]
@@ -569,6 +601,14 @@ class CodexAdjudicator:
                     "worktree_failed", f"Could not materialise a worktree: {detail}"
                 ),
                 errors=(f"worktree:{exc.returncode}",),
+            )
+        except GitObjectUnreadable as exc:
+            # Guardrail ④: the parent object is not readable, so evidence-backed
+            # judgment is impossible. Abstain with a distinct, attributable reason
+            # instead of letting the model produce a blind or garbled answer.
+            return finish(
+                _abstain_decision("sandbox_git_unreadable", str(exc)),
+                errors=("sandbox_git_unreadable",),
             )
         except CodexTimeout as exc:
             return finish(

@@ -18,8 +18,11 @@ reconcilable and a silent failure cannot masquerade as a clean scan.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
+import traceback
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -96,6 +99,15 @@ class ScanOutcome:
     adjudication_yes: list[dict[str, Any]] = field(default_factory=list)
     adjudication_no: list[str] = field(default_factory=list)
     adjudication_abstain: list[tuple[str, str]] = field(default_factory=list)
+    #: Commits whose adjudication raised (SHA -> formatted traceback). These are
+    #: distinct from ABSTAIN verdicts: the call never produced a decision at all.
+    #: Previously swallowed by a bare warning; retained here for the debug report.
+    adjudication_errors: list[tuple[str, str]] = field(default_factory=list)
+    #: Per-commit adjudication detail for offline debugging. One entry per
+    #: adjudicated commit, in completion order, capturing the verdict, the raw
+    #: abstain/validation reason, and any validation errors — the record the
+    #: aggregate counts throw away.
+    adjudication_records: list[dict[str, Any]] = field(default_factory=list)
     attribution_moves: list[dict[str, Any]] = field(default_factory=list)
     duplicates_dropped: list[dict[str, Any]] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=TokenUsage)
@@ -301,22 +313,43 @@ def scan_repository(
         return sha, adjudicator.adjudicate(_candidate_from(commit, repository.canonical_source))
 
     with ThreadPoolExecutor(max_workers=settings.workers) as pool:
-        futures = [pool.submit(adjudicate_one, sha) for sha in candidates]
+        # Keep the future->sha map so a raised adjudication can still be attributed
+        # to its commit: future.result() re-raises before returning the (sha, result)
+        # tuple, so the SHA is otherwise lost.
+        future_to_sha = {pool.submit(adjudicate_one, sha): sha for sha in candidates}
+        futures = list(future_to_sha)
         for future in as_completed(futures):
+            failed_sha = future_to_sha[future]
             try:
                 sha, result = future.result()
             except Exception as exc:
-                LOGGER.warning("adjudication failed: %s", exc)
+                # Previously swallowed by a bare warning. Retain the SHA and full
+                # traceback so the debug report can show exactly what blew up.
+                tb = traceback.format_exc()
+                LOGGER.warning("adjudication failed for %s: %s", failed_sha[:12], exc)
+                outcome.adjudication_errors.append((failed_sha, tb))
+                commit = by_sha.get(failed_sha)
+                outcome.adjudication_records.append(
+                    {
+                        "sha": failed_sha,
+                        "subject": (commit.message.splitlines() or [""])[0] if commit else "",
+                        "verdict": "ERROR",
+                        "reason": f"{type(exc).__name__}: {exc}",
+                        "validation_errors": [],
+                        "raw_output": None,
+                    }
+                )
                 continue
             usage = usage + result.usage
+            commit = by_sha[sha]
+            subject = (commit.message.splitlines() or [""])[0]
             if result.verdict == "YES":
-                commit = by_sha[sha]
                 finding = dict(result.decision)
                 finding.update(
                     {
                         "commit_sha": sha,
                         "commit_date": commit.committer_time,
-                        "commit_subject": (commit.message.splitlines() or [""])[0],
+                        "commit_subject": subject,
                     }
                 )
                 outcome.adjudication_yes.append(finding)
@@ -325,6 +358,21 @@ def scan_repository(
             else:
                 reason = str(result.decision.get("abstain_reason") or "unspecified")
                 outcome.adjudication_abstain.append((sha, reason))
+            # One debug record per adjudicated commit, capturing what the counts drop:
+            # the verdict, the raw reason string (garbled ones included, verbatim), any
+            # validation errors, and the raw model text when the backend exposes it.
+            outcome.adjudication_records.append(
+                {
+                    "sha": sha,
+                    "subject": subject,
+                    "verdict": result.verdict,
+                    "reason": str(result.decision.get("abstain_reason") or "")
+                    if result.verdict == "ABSTAIN"
+                    else "",
+                    "validation_errors": list(getattr(result, "validation_errors", ()) or ()),
+                    "raw_output": getattr(result, "raw_output", None),
+                }
+            )
             if (
                 settings.max_cost_usd is not None
                 and pricing.estimate(usage) >= settings.max_cost_usd
@@ -398,6 +446,151 @@ def scan_repository(
     )
     outcome.context = write_narrative(context, client=client)
     return outcome
+
+
+# A reason string is "suspect" when it does not look like a short machine tag: it is
+# long, multi-line, or carries non-ASCII / control-channel markers. These are the
+# degenerate/garbled model outputs worth eyeballing. This flags them for review; it
+# does not change any verdict.
+_TAG_RE = re.compile(r"^[a-z0-9_]{1,48}$")
+_CHANNEL_MARKERS = ("to=functions.", "```", "badjson")
+
+
+def _reason_is_suspect(reason: str) -> bool:
+    reason = reason or ""
+    if _TAG_RE.match(reason):
+        return False
+    if len(reason) > 80 or "\n" in reason:
+        return True
+    if any(marker in reason for marker in _CHANNEL_MARKERS):
+        return True
+    # any non-ASCII (e.g. CJK/Cyrillic/Armenian) in a reason field is a red flag
+    return any(ord(ch) > 127 for ch in reason)
+
+
+def build_debug_report(outcome: ScanOutcome) -> dict[str, Any]:
+    """Assemble a structured, per-commit debug view of an adjudication run.
+
+    Everything the aggregate counts drop: which commit produced each verdict, the raw
+    abstain/validation reason (garbled ones verbatim), validation errors, the raw model
+    text when available, and any exception traceback. Pure reporting — reads the outcome,
+    changes nothing.
+    """
+    records = outcome.adjudication_records
+    by_verdict: dict[str, list[dict[str, Any]]] = {}
+    for rec in records:
+        by_verdict.setdefault(rec.get("verdict", "?"), []).append(rec)
+
+    abstains = by_verdict.get("ABSTAIN", [])
+    suspect = [r for r in abstains if _reason_is_suspect(r.get("reason", ""))]
+
+    return {
+        "generated_by": "strata.scan.debug",
+        "summary": {
+            "adjudicated": len(records),
+            "findings": len(by_verdict.get("YES", [])),
+            "rejected": len(by_verdict.get("NO", [])),
+            "abstained": len(abstains),
+            "errors": len(outcome.adjudication_errors),
+            "triage_errors": len(outcome.triage_errors),
+            "suspect_reasons": len(suspect),
+            "abstain_reasons": _counted(r.get("reason", "") for r in abstains),
+            "estimated_cost_usd": round(outcome.cost_usd, 4),
+            "wall_clock_s": round(outcome.wall_clock_s, 1),
+        },
+        "findings": [
+            {"sha": r["sha"], "subject": r["subject"]}
+            for r in by_verdict.get("YES", [])
+        ],
+        "abstained": [
+            {
+                "sha": r["sha"],
+                "subject": r["subject"],
+                "reason": r.get("reason", ""),
+                "suspect": _reason_is_suspect(r.get("reason", "")),
+                "validation_errors": r.get("validation_errors", []),
+                "raw_output": r.get("raw_output"),
+            }
+            for r in abstains
+        ],
+        "rejected": [
+            {"sha": r["sha"], "subject": r["subject"]}
+            for r in by_verdict.get("NO", [])
+        ],
+        "errors": [
+            {"sha": sha, "traceback": tb} for sha, tb in outcome.adjudication_errors
+        ],
+        "triage_errors": [
+            {"sha": sha, "error": err} for sha, err in outcome.triage_errors
+        ],
+    }
+
+
+def _debug_markdown(report: dict[str, Any]) -> str:
+    """Render the debug report as human-readable Markdown for manual evaluation."""
+    s = report["summary"]
+    out: list[str] = []
+    out.append("# Strata scan — adjudication debug report\n")
+    out.append(
+        f"Adjudicated **{s['adjudicated']}** commits: "
+        f"**{s['findings']}** findings, **{s['rejected']}** rejected, "
+        f"**{s['abstained']}** abstained, **{s['errors']}** errors "
+        f"(+{s['triage_errors']} triage errors). "
+        f"${s['estimated_cost_usd']} · {s['wall_clock_s']}s\n"
+    )
+    if s["suspect_reasons"]:
+        out.append(
+            f"> ⚠️ **{s['suspect_reasons']} abstain reason(s) look garbled/degenerate** "
+            f"— non-tag text, non-ASCII, or leaked tool-channel markers. Inspect the "
+            f"raw model output below.\n"
+        )
+
+    def sha(x: str) -> str:
+        return f"`{(x or '')[:12]}`"
+
+    if report["findings"]:
+        out.append("\n## Findings (YES)\n")
+        for r in report["findings"]:
+            out.append(f"- {sha(r['sha'])} — {r['subject']}")
+    if report["abstained"]:
+        out.append("\n## Abstained\n")
+        for r in report["abstained"]:
+            flag = " ⚠️ **suspect**" if r["suspect"] else ""
+            out.append(f"- {sha(r['sha'])} — {r['subject']}{flag}")
+            out.append(f"    - reason: `{r['reason'][:300]}`")
+            if r["validation_errors"]:
+                out.append(f"    - validation_errors: {r['validation_errors']}")
+            if r["suspect"] and r.get("raw_output"):
+                snippet = r["raw_output"][:600].replace("\n", " ")
+                out.append(f"    - raw_output (600 chars): `{snippet}`")
+    if report["errors"]:
+        out.append("\n## Adjudication errors (raised, no verdict)\n")
+        for r in report["errors"]:
+            first = (r["traceback"].strip().splitlines() or [""])[-1]
+            out.append(f"- {sha(r['sha'])} — {first}")
+    if report["rejected"]:
+        out.append("\n## Rejected (NO)\n")
+        for r in report["rejected"]:
+            out.append(f"- {sha(r['sha'])} — {r['subject']}")
+    return "\n".join(out) + "\n"
+
+
+def write_debug_report(outcome: ScanOutcome, path: Any) -> None:
+    """Write the per-commit debug report to ``path`` (JSON) and a sibling ``.md``.
+
+    ``path`` is a path-like; a ``.md`` companion is written alongside it. Best-effort:
+    a failure here must never fail the scan, so exceptions are logged and swallowed.
+    """
+    from pathlib import Path
+
+    try:
+        report = build_debug_report(outcome)
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        p.with_suffix(".md").write_text(_debug_markdown(report), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - diagnostics must not break the run
+        LOGGER.warning("failed to write debug report to %s: %s", path, exc)
 
 
 def _usage_of(decision: Any) -> TokenUsage:
