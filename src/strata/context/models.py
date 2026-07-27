@@ -92,6 +92,12 @@ class Fingerprint:
     attributed_from: str | None = None
     attribution_method: str | None = None
     patch_id: str | None = None
+    #: Introduced-to-fixed span provenance ({sha, date, method, note}) and the
+    #: span itself in days, computed by :mod:`strata.introduction` when enabled.
+    #: ``introduced_to_fixed_days`` is ``None`` when the introduction was declined
+    #: (no parent anchor, present-since-genesis, or no signal).
+    introduced_to_fixed: Mapping[str, Any] | None = None
+    introduced_to_fixed_days: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = _clean(asdict(self))

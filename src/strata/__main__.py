@@ -273,7 +273,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="the repository, as an alternative to the positional argument",
     )
     scan_parser.add_argument("--last", type=_positive_int, metavar="N")
+    scan_parser.add_argument(
+        "--revision",
+        metavar="REV",
+        help=(
+            "pin the scan to a specific revision instead of current HEAD -- a "
+            "SHA, tag or branch. Combine with '--last 1' to scan exactly that "
+            "one commit, or a larger '--last N' to walk back N commits from it. "
+            "Useful for reproducing a historical scan or targeting a single "
+            "known commit"
+        ),
+    )
     scan_parser.add_argument("--out", type=Path, default=Path("security-context.json"))
+    scan_parser.add_argument(
+        "--attribute-introductions",
+        action="store_true",
+        help=(
+            "compute the introduced-to-fixed span per fingerprint: blame the "
+            "pre-fix lines each fix touched and record how long the vulnerable "
+            "code lived (in days). Deterministic and local -- adds git-blame "
+            "calls, no model calls. Off by default"
+        ),
+    )
     scan_parser.add_argument("--profile", choices=("A0", "A1"), default="A0")
     scan_parser.add_argument("--workers", type=_positive_int, default=8)
     scan_parser.add_argument("--max-cost", type=_non_negative_float, default=None)
@@ -386,6 +407,7 @@ def _scan_config_from_arguments(arguments: argparse.Namespace) -> Any:
 
     return ScanConfig(
         last=arguments.last,
+        revision=arguments.revision,
         profile=Profile.parse(arguments.profile),
         workers=arguments.workers,
         max_cost_usd=arguments.max_cost,
@@ -394,6 +416,7 @@ def _scan_config_from_arguments(arguments: argparse.Namespace) -> Any:
         adjudicator=arguments.adjudicator,
         sandbox=arguments.sandbox,
         fetch_timeout=arguments.fetch_timeout,
+        attribute_introductions=arguments.attribute_introductions,
     )
 
 

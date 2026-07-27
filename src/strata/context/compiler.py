@@ -228,6 +228,16 @@ def _fingerprint_from(
             str(finding["attribution_method"]) if finding.get("attribution_method") else None
         ),
         patch_id=str(finding["patch_id"]) if finding.get("patch_id") else None,
+        introduced_to_fixed=(
+            dict(finding["introduced_to_fixed"])
+            if isinstance(finding.get("introduced_to_fixed"), Mapping)
+            else None
+        ),
+        introduced_to_fixed_days=(
+            int(finding["introduced_to_fixed_days"])
+            if isinstance(finding.get("introduced_to_fixed_days"), int)
+            else None
+        ),
     )
 
 

@@ -35,6 +35,7 @@ from .codex_adjudicator import CodexAdjudicator
 from .context import RepoRef, ScanStats, SecurityContext, compile_context, write_narrative
 from .contracts import InputProfile, ProviderSettingsV1
 from .git_repo import DEFAULT_FETCH_TIMEOUT, GitCommit, GitRepository
+from .introduction import attribute_introductions
 from .llm import LLMOversizeError, ModelPricing, OpenAIChatClient, TokenUsage
 from .prefilter import PrefilterStats, prefilter_commit
 from .triage import OpenAICompatibleTriageBackend, TriageRunner
@@ -85,6 +86,10 @@ class ScanConfig:
     #: ls-remote). Mirroring a large remote can exceed the 120s default over a
     #: slow link; raise this instead of letting the clone abort mid-transfer.
     fetch_timeout: float = DEFAULT_FETCH_TIMEOUT
+    #: Compute the introduced-to-fixed span per fingerprint (deterministic,
+    #: blame-only; see :mod:`strata.introduction`). Off by default while the
+    #: heuristic stabilises; it adds only local git-blame calls, no LLM.
+    attribute_introductions: bool = False
 
 
 @dataclass(slots=True)
@@ -405,6 +410,16 @@ def scan_repository(
             f"attribution: {len(moves)} finding(s) re-pointed past a merge, "
             f"{len(duplicates)} duplicate(s) collapsed"
         )
+
+    # Introduced-to-fixed span: blame the pre-fix lines each fix touched and
+    # record how long the vulnerable code lived. Deterministic, opt-in, no LLM.
+    # Runs here -- after findings are finalized (re-pointed, de-duplicated) and
+    # while they are still mutable dicts the compiler reads by key.
+    if settings.attribute_introductions:
+        findings = attribute_introductions(outcome.adjudication_yes, repository)
+        outcome.adjudication_yes = findings
+        attributed = sum(1 for f in findings if f.get("introduced_to_fixed_days") is not None)
+        say(f"introductions: {attributed}/{len(findings)} finding(s) got a span")
 
     # --- compile ----------------------------------------------------------
     stats = ScanStats(

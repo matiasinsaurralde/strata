@@ -460,11 +460,17 @@ class TestCliExposesTheBackend:
         assert self._scan_args(["--sandbox", mode]).sandbox == mode
 
     def test_the_flags_reach_scan_config(self):
-        """Parsing them is not enough; they have to be threaded through."""
+        """Parsing them is not enough; they have to be threaded through.
+
+        The threading lives in ``_scan_config_from_arguments`` (the ``ScanConfig``
+        is built there, then handed to ``_run_scan``), so that is the source to
+        inspect.
+        """
         import inspect
 
         from strata import __main__
 
-        source = inspect.getsource(__main__._run_scan)
+        source = inspect.getsource(__main__._scan_config_from_arguments)
         assert "adjudicator=arguments.adjudicator" in source
         assert "sandbox=arguments.sandbox" in source
+        assert "attribute_introductions=arguments.attribute_introductions" in source
