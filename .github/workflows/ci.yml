@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Fail loudly rather than reaching for a real endpoint. The suite is
+  # hermetic; anything that tries to make a live call should break CI, not
+  # quietly pick up a default.
+  OPENAI_BASE_URL: http://127.0.0.1:1/unused
+  OPENAI_API_KEY: ci-not-a-real-key
+  OPENAI_MODEL: ci-not-a-real-model
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv python install
+      - name: ruff check
+        run: uv run --with ruff ruff check src tests
+      - name: ruff format --check
+        run: uv run --with ruff ruff format --check src tests
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # git_repo.py shells out to real git; several tests build throwaway
+          # repositories, so a working git with full history behaviour matters.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv python install
+      - name: Configure git identity
+        # Tests that construct fixture repositories commit into them.
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - name: Run tests
+        # No network, no API key, no cassettes: every test is offline today.
+        # If that ever stops being true, this job fails rather than silently
+        # spending money, and the fix is to record cassettes — not to hand CI
+        # a live credential.
+        run: uv run pytest -q --no-header
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - run: uv python install
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Verify the wheel imports without the source tree
+        # resources.py resolves prompts/, schemas/ and data/ by walking up to
+        # pyproject.toml. Installing the wheel somewhere else is what catches a
+        # path assumption that only holds in a source checkout.
+        run: |
+          uv venv /tmp/verify
+          VIRTUAL_ENV=/tmp/verify uv pip install dist/*.whl
+          cd /tmp && VIRTUAL_ENV=/tmp/verify /tmp/verify/bin/python -c "import strata; print(strata.__name__, 'imports from an installed wheel')"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/

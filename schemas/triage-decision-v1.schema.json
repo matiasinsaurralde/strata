@@ -1,0 +1,519 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://strata.local/schemas/triage-decision-v1.schema.json",
+  "title": "TriageDecisionV1",
+  "description": "A provenance-bearing pass-1 decision. Failures have a null verdict and can never masquerade as NO.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "commit_sha",
+    "parent_sha",
+    "input_profile",
+    "raw_input_hash",
+    "input_hash",
+    "verdict",
+    "parser_status",
+    "provider",
+    "usage",
+    "latency_ms",
+    "provenance",
+    "chunks",
+    "error"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "triage-decision-v1"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commit_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "parent_sha": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/git_sha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "input_profile": {
+      "enum": [
+        "D0",
+        "D1",
+        "D2",
+        "D3"
+      ]
+    },
+    "raw_input_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "input_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "verdict": {
+      "oneOf": [
+        {
+          "enum": [
+            "YES",
+            "NO"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parser_status": {
+      "enum": [
+        "valid",
+        "partial",
+        "malformed",
+        "backend_error",
+        "input_error"
+      ]
+    },
+    "provider": {
+      "$ref": "#/$defs/provider"
+    },
+    "usage": {
+      "$ref": "#/$defs/usage"
+    },
+    "latency_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "chunks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/chunk"
+      }
+    },
+    "error": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "parser_status": {
+            "const": "valid"
+          }
+        },
+        "required": [
+          "parser_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "enum": [
+              "YES",
+              "NO"
+            ]
+          },
+          "error": {
+            "type": "null"
+          },
+          "chunks": {
+            "minItems": 1,
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/chunk"
+                },
+                {
+                  "properties": {
+                    "parser_status": {
+                      "const": "valid"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "parser_status": {
+            "const": "partial"
+          }
+        },
+        "required": [
+          "parser_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "const": "YES"
+          },
+          "error": {
+            "$ref": "#/$defs/error"
+          },
+          "chunks": {
+            "minItems": 2,
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "parser_status": {
+                      "const": "valid"
+                    },
+                    "verdict": {
+                      "const": "YES"
+                    }
+                  },
+                  "required": [
+                    "parser_status",
+                    "verdict"
+                  ]
+                }
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "parser_status": {
+                      "enum": [
+                        "malformed",
+                        "backend_error",
+                        "input_error"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "parser_status"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "parser_status": {
+            "enum": [
+              "malformed",
+              "backend_error",
+              "input_error"
+            ]
+          }
+        },
+        "required": [
+          "parser_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "type": "null"
+          },
+          "error": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "model_version",
+        "decoding"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "decoding": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "estimated_cost_usd"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "total_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "estimated_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt_id",
+        "prompt_hash",
+        "schema_hash",
+        "created_at",
+        "tool_policy_hash",
+        "backend_request_ids",
+        "retry_count",
+        "cache_hit"
+      ],
+      "properties": {
+        "prompt_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "schema_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tool_policy_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backend_request_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cache_hit": {
+          "type": "boolean"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "malformed_output",
+            "backend",
+            "input",
+            "oversize"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "input_hash",
+        "verdict",
+        "parser_status",
+        "raw_output",
+        "usage",
+        "latency_ms",
+        "error",
+        "backend_request_id"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "verdict": {
+          "oneOf": [
+            {
+              "enum": [
+                "YES",
+                "NO"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parser_status": {
+          "enum": [
+            "valid",
+            "malformed",
+            "backend_error",
+            "input_error"
+          ]
+        },
+        "raw_output": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backend_request_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "parser_status": {
+                "const": "valid"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "verdict": {
+                "enum": [
+                  "YES",
+                  "NO"
+                ]
+              },
+              "error": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "verdict": {
+                "type": "null"
+              },
+              "error": {
+                "$ref": "#/$defs/error"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

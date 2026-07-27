@@ -1,0 +1,457 @@
+{
+ "schema_version": "matrix-truth-v1",
+ "description": "Commit roles adjudicated by LLM panels over a four-repository comparison. Union of commits claimed as security fixes by this pipeline or by another tool it was evaluated against. Not human ground truth; see strata_eval.truth.",
+ "built_at": "2026-07-27",
+ "entries": [
+  {
+   "sha": "5754b3eaeae78aeca49528d2ab980c0f26ca707c",
+   "repo": "buger/jsonparser",
+   "role": "fix",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Merge of PR #197 'Fix infinite loop in Get'; diffed against first parent 57853d8 it adds `if end == -1 { return -1 }` before `i += end - 1` in searchKeys (parser.go:294). Verified against the parent loop body: with blockEnd returning -1 the index does `i += -2` and then the loop tail does `i++`, a net -1 per pass, so on the added test input `{\"a\":1{` with path [\"b\"] the scanner oscillates forever "
+  },
+  {
+   "sha": "91ac96899e492584984ded0c8f9a08f10b473717",
+   "repo": "buger/jsonparser",
+   "role": "fix",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Fixes issue #188 in findKeyStart (parser.go:98-108): the parent did `i = blockEnd(data[i:], data[i], ']') + i` for '[' and the '}' equivalent for '{', consuming blockEnd's -1 error sentinel as an offset. With an unmatched bracket that computes i = i-1, the loop tail's `i++` restores it, and the switch re-dispatches on the same byte forever \u2014 a strictly zero-progress infinite loop, confirmed by the"
+  },
+  {
+   "sha": "a04c0ece70b47c803514cdba34618fe04cfc16a8",
+   "repo": "buger/jsonparser",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Rewrites StringToBytes in bytes_unsafe.go from the illegal 'local reflect.SliceHeader then cast' pattern to mutating a real slice's header plus runtime.KeepAlive(s). This is textbook unsafe.Pointer-rule hygiene (the go vet unsafeptr check), not a fix for an exploitable state. The sole call site is parser.go:60, `Unescape(StringToBytes(key), stackbuf[:])` inside findKeyStart, where `key` is the API"
+  },
+  {
+   "sha": "d3eacc0bab779d6cf98221f5268828fff287876e",
+   "repo": "buger/jsonparser",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Correct technical read: Delete() only treated KeyPathNotFoundError as fatal, so a MalformedJsonError return from internalGet (which yields endOffset = -1) fell through into `data[startOffset:endOffset]`, and the second internalGet discarded its error entirely into `endOffset = startOffset + subEndOffset`. The added tests (`\"0\":\"0\":`, `{\"a\":  `, `{\"a\":{\"b\":  `) confirm the impact is a slice-bounds-"
+  },
+  {
+   "sha": "355692920adc95a261f8afba887dce636a0e2d67",
+   "repo": "getkin/kin-openapi",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Adds a `components != nil` guard in openapi2conv.FromV3SchemaRef so a $ref reached via FromV3RequestBodyFormData (which passes components=nil when recursing into array items) no longer nil-derefs. Real bug, but openapi2conv is an offline V3->V2 spec-conversion utility, not a request-handling path: the spec being converted is supplied by the operator/toolchain, not by remote traffic. Even in the co"
+  },
+  {
+   "sha": "67f0b233ffc01332f7d993f79490fbea5f4455f1",
+   "repo": "getkin/kin-openapi",
+   "role": "fix",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Removes `RegisterBodyDecoder(\"application/zip\", zipFileBodyDecoder)` from openapi3filter's init(), exports the decoder as ZipFileBodyDecoder with a 'susceptible to a zip bomb attack' warning, and records it as a v0.131.0 breaking change. Reverting genuinely re-arms a default-on, remotely reachable surface: openapi3.Content.Get falls back to `type/*` and `*/*`, so any spec declaring a wildcard requ"
+  },
+  {
+   "sha": "f476f7b5c45634be488e9c09e67dab24251a54f7",
+   "repo": "getkin/kin-openapi",
+   "role": "fix",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Makes decodeSchemaConstructs recurse into allOf/anyOf/oneOf instead of unrolling only one level in urlencodedBodyDecoder. Pre-fix, any property nested at composition depth >=2 (e.g. PathRequest.allOf -> Msg.allOf -> Msg_Opt.properties.msg in the added issue1045 test) was never decoded into `obj`, so contentType.Schema.Value.VisitJSON never saw it. For a non-required property carrying pattern/enum/"
+  },
+  {
+   "sha": "2d4bbec941551479b1fdf1e54ece03e6e82a7e72",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "fix lack of escaping of filename in Content-Disposition (#3556)",
+   "rationale": "Investigator and adversary agree, both with wire-level reproduction. Parent builds `attachment; filename=\"`+filename+`\"` with no neutralisation (sink dates to d1b45be0, 2018); this commit adds quoteEscaper/escapeQuotes and wraps the pre-existing sink. Tag boundary v1.9.0 vulnerable / v1.9.1 patched exactly matches CVE-2023-29401 (GHSA-2c4m-59x9-fr2g), whose product is genuinely the Go module githu"
+  },
+  {
+   "sha": "36b0dede4b8c4a67d92c4107cebc5a068364321d",
+   "repo": "gin-gonic/gin",
+   "role": "context",
+   "confidence": "low",
+   "source": "adversarial-panel",
+   "subject": "fix(context): check handler is nil (#3413)",
+   "rationale": "Verified the diff myself: the guard is added to both HandlerNames() (harmless, `continue` inside a range loop) and Next() (fatal, `continue` skips the manual `c.index++`). Also verified the sink's origin -- `git log -S'c.handlers[c.index](c)' -- context.go` returns only dc433726 (2014-07-16), ten years earlier. No attacker-controlled path can put nil into c.handlers: every writer (context.go:100/1"
+  },
+  {
+   "sha": "4cee78f5382d5245c3652e6c15fee715eec505c3",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Correctly identifies the real X-Forwarded-Prefix fix (the counterpart to the inverted ccb105d claim claim). Parent was the first-attempt sanitiser 81ac7d55 (url.QueryEscape then un-escape %2F), which still let '.', '/' and ../ through \u2014 its own test asserted Location '../../../bug%2523%253F/path'. This commit whitelists [a-zA-Z0-9/-] and collapses repeated slashes, so the header can no lon"
+  },
+  {
+   "sha": "5929d521715610c9dd14898ebbe1d188d5de8937",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "ClientIP: check every proxy for trustiness (#2844)",
+   "rationale": "Unanimous. Parent validateHeader walks the XFF chain LEFT-to-right and unconditionally selects items[0] -- the client-supplied end -- so even with SetTrustedProxies correctly narrowed the attacker dictates ClientIP(). Both parties executed it: with RemoteAddr 40.40.40.40, SetTrustedProxies([40.40.40.40]) and 'X-Forwarded-For: 1.2.3.4, 30.30.30.30', parent returns 1.2.3.4 and the commit returns 30."
+  },
+  {
+   "sha": "5cfe2c56dd0692c474c3d97665d8de278ac69c61",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "low",
+   "source": "adversarial-panel",
+   "subject": "Merge branch 'develop' | Update AUTHORS and CHANGELOG",
+   "rationale": "First parent 28b9ff9e:logger.go lines 49/52 (verified) prefer X-Real-IP then X-Forwarded-For over RemoteAddr with no trusted-proxy check, in the Logger() that gin.Default() installs -- source-IP forgery in the built-in access log. `git grep ClientIP 5cfe2c56^1` returns nothing, so on the master line there was no exported ClientIP() and the reachable impact is audit-log forgery, not an in-framework"
+  },
+  {
+   "sha": "5ec3b6eda13a420f1cc4caf79a44020cbb16c98e",
+   "repo": "gin-gonic/gin",
+   "role": "introduce",
+   "confidence": "medium",
+   "source": "adversarial-panel",
+   "subject": "Merge pull request #213 (Add localhost to reservedIps in context.go)",
+   "rationale": "Unanimous on direction, with medium confidence on the introduce/context boundary rather than on the facts. I verified the first-parent diff myself: it is exactly one line, adding \"127.0.0.1/32\" to reservedLocalIps. That WIDENS the trust set. Pre-commit a loopback peer failed ipInMasks so ForwardedFor returned early and the header could not influence ClientIP() -- fail-closed. Post-commit, remote=1"
+  },
+  {
+   "sha": "6e320c97e83a61df3daa0f28695a736bece3104b",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "Fix context.Params race condition on Copy() (#1841)",
+   "rationale": "Unanimous, and both parties independently executed the exploit on extracted trees. Parent Copy() is a shallow `var cp = *c` that deep-copies only Keys, leaving cp.Params aliasing the pooled backing array that reset() preserves via `c.Params = c.Params[0:0]` and that (*node).getValue overwrites in place. The adversary re-ran with New() instead of Default() to rule out Logger/Recovery artifacts and "
+  },
+  {
+   "sha": "73ccfea3ba5a115e74177dbfbc1ea0fff88c13f4",
+   "repo": "gin-gonic/gin",
+   "role": "context",
+   "confidence": "medium",
+   "source": "adversarial-panel",
+   "subject": "Add mutex for protect Context.Keys map (#1391)",
+   "rationale": "I read the diff myself and it settles the contest: allocateContext becomes `&Context{engine: engine, KeysMutex: &sync.RWMutex{}}` AND reset() adds `c.KeysMutex = &sync.RWMutex{}` at line 85, so every Context born or recycled through gin has a non-nil mutex, and Copy()'s `var cp = *c` propagates the pointer. The nil deref is reachable only if a developer writes `&gin.Context{}` in their own source "
+  },
+  {
+   "sha": "7cb151bb4c4cfc6018a00a125422ff38a041b9f8",
+   "repo": "gin-gonic/gin",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Real bug (loop bounded by len(accepted) while indexing offer[i], so Accept: image/tiff-fx vs offered image/tiff panics), and it is attacker-controlled \u2014 but an index-out-of-range in a handler is contained by gin's Recovery middleware and by http.Server's per-connection recover. Worst case is a 500 per malicious request; the process does not die. Per the calibration that is context, not a fix. The "
+  },
+  {
+   "sha": "81ac7d55a09e34013225db0aeac6e70c1ae68928",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "Add escape logic for header (#3500)  [CONTROL]",
+   "rationale": "CONTROL commit, excluded from both tools' counts. Unanimous 'fix' at high confidence. It is the first guard over the sink that ccb105db created in v1.4.0: `prefix = url.QueryEscape(prefix)` + `strings.ReplaceAll(prefix, \"%2F\", \"/\")` inserted above the pre-existing concatenation, 16 insertions / 0 deletions, no new source or sink. The adversary ran a 60-vector differential probe against a real http"
+  },
+  {
+   "sha": "9914178584e42458ff7d23891463a880f58c9d86",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "fix(context): ClientIP handling for multiple X-Forwarded-For header values (#4472)",
+   "rationale": "Adversary attacked hard and failed. Parent `requestHeader` is `Header.Get`, returning only the FIRST of multiple same-named header lines, so validateHeader's right-to-left trusted-proxy walk hit the i==0 branch and returned the attacker's line verbatim. Both parties reproduced the spoof; the adversary went further and ran the rubric's decisive test against CURRENT master, surgically reverting only"
+  },
+  {
+   "sha": "a71af9c144f9579f6dbe945341c1df37aaf09c0d",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "removing log injection (#2277)",
+   "rationale": "Unanimous, with the adversary running the exploit through a real net/http.Server over a real TCP socket rather than synthetic bytes. Parent defaultLogFormatter writes param.Path (sourced from the percent-DECODED c.Request.URL.Path) with a bare %s into a newline-terminated record: wire target `GET /%0a%5bGIN%5d...%2fADMIN-DELETED-ALL` yields TWO log lines from one request, the second byte-indisting"
+  },
+  {
+   "sha": "a900e7888c50e65e5a830794c2cff536944cd51c",
+   "repo": "gin-gonic/gin",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Byte-identical to 5ec3b6e \u2014 it is the single commit inside PR #213 that the merge brought in (same one-line addition of \"127.0.0.1/32\"). Same verdict: trust-widening default-config tweak, reverting reintroduces nothing exploitable. Notable that strata counted the merge and its only child as two separate access-control findings."
+  },
+  {
+   "sha": "c7fdc2e03a4b6a015a4f6d646c13f2599f719080",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "Errors in context are removed",
+   "rationale": "Unanimous, and the adversary converted the investigator's code reading into a working PoC by rebuilding both 2014 trees against a stand-in httprouter. Parent createContext pulls a recycled Context from a real sync.Pool and resets writermem/Request/Params/handlers/Keys/index but NOT Errors, which is append-only; three sequential requests share one *Context (same pointer three times) and a clean `GE"
+  },
+  {
+   "sha": "ccb105dbcb48cbcec988df8a46e90af3adf7c0ff",
+   "repo": "gin-gonic/gin",
+   "role": "introduce",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "add prefix from X-Forwarded-Prefix in redirectTrailingSlash (#1238)",
+   "rationale": "Unanimous 'introduce' with an executed A/B on the real router. The parent tree contains NO reference to X-Forwarded-Prefix anywhere (`git grep` exits 1) and redirectTrailingSlash derives its target solely from req.URL.Path; this commit adds `\"path\"` to the imports and the read `path.Clean(c.Request.Header.Get(\"X-Forwarded-Prefix\"))` concatenated into the redirect target, feeding a pre-existing htt"
+  },
+  {
+   "sha": "d459835d2b077e44f7c9b453505ee29881d5d12d",
+   "repo": "gin-gonic/gin",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "A 66-file v1.2 release merge. The cited hunk merely swaps the priority of two equally client-supplied headers: parent read X-Real-Ip then X-Forwarded-For, commit reads X-Forwarded-For (LEFTMOST element, the most spoofable value of all) then X-Real-Ip. At this revision gin performs no trusted-proxy validation at all, so both orders are fully spoofable \u2014 reverting brings back nothing exploitable, an"
+  },
+  {
+   "sha": "e0d46ded6cb6974d55a255ab122d1aa6ca0cd60e",
+   "repo": "gin-gonic/gin",
+   "role": "context",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "fix(context): verify URL is Non-nil in initQueryCache() (#3969)",
+   "rationale": "Both parties reached 'context' independently, and the adversary supplied the decisive fact the investigator missed: Engine.handleHTTPRequest unconditionally dereferences c.Request.URL.Path (gin.go:625 at the parent, gin.go:692 at HEAD) BEFORE any handler runs, so initQueryCache is structurally unreachable with a nil URL through gin's serving path. Both trees panic identically at gin.go:625 when fe"
+  },
+  {
+   "sha": "e207a3ce65323c3dda7cd8133fe14f4f1efd2500",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "Fix context.Copy() race condition (#1020)",
+   "rationale": "Unanimous. Parent Copy() is a bare shallow struct copy sharing the Keys map header, and the parent context.go contains no synchronisation whatsoever (grep for sync|mutex|Lock returns zero hits in Feb 2019). The adversary improved on the investigator's standalone repro by grafting the commit's own post-fix tests onto the UNFIXED parent tree and building it offline: `go test -race` yields WARNING: D"
+  },
+  {
+   "sha": "e4f6e053d04a11e37c7b76b086167c5700e177b1",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "Fixed issue allowing to spoof ClientIP()",
+   "rationale": "Unanimous. Parent ClientIP() returned Header.Get(\"X-Real-IP\"), then X-Forwarded-For, then RemoteAddr, with zero peer validation -- any remote client could dictate the value. The commit strips header trust from the default path entirely (post-commit ClientIP() is `return c.Request.RemoteAddr`) and moves XFF unwrapping into an opt-in ForwardedFor() middleware gated on `if !ipInMasks(remoteIp, proxie"
+  },
+  {
+   "sha": "f9de6049cbf0820198708091e2b8e01696ec1473",
+   "repo": "gin-gonic/gin",
+   "role": "fix",
+   "confidence": "high",
+   "source": "adversarial-panel",
+   "subject": "Remove contents of the Authorization header while dumping requests (#1836)",
+   "rationale": "Unanimous, and the adversary strengthened the parent-state finding beyond the investigator's. The dangerous read `httputil.DumpRequest(c.Request, false)` predates the commit (7afb3238 2016, removed 48c3482b 2018, re-added 21354b18 2018) and the diff leaves it as unchanged context, inserting only a masking loop -- guards, does not add. Investigator said the leak was default-on because IsDebugging()"
+  },
+  {
+   "sha": "11d0baf8345f0867201e2d1e78292e68ac05bd30",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Refactor of the brand-new experimental GCP service-account-identity call creds (follow-up to #9118) to fetch tokens in a background goroutine off the mutex and add a 60s bound. The 'attacker' would have to be the GCE metadata server, which is a trusted local component, and the underlying metadata client already had a 15s timeout. It also changes the exported constructor signature - a latency/API i"
+  },
+  {
+   "sha": "1c63fa5f5492fb6cb4cabf9847999ce469505f49",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Removes the GRPC_GO_EXPERIMENTAL_DISABLE_STRICT_PATH_CHECKING opt-out that 58bbf8ab added alongside the actual fix. The env var already defaulted to false (strict checking on), so reverting this restores only an operator-selectable escape hatch, not a vulnerability. Pure deprecation cleanup of a TODO (fixes #8986). The real fix for GHSA-p77j-4mvh-x3m3 is 58bbf8ab."
+  },
+  {
+   "sha": "1c8e0950eda84e87c020a7fd7099ecccd3b21218",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "serverHandlerTransport.Drain() panicked. Only two callers (server.go:1145 addConn, server.go:2004 GracefulStop). The GracefulStop path is admin-initiated with zero attacker involvement; the attacker-reachable path (a new ServeHTTP request arriving after s.drain is set) panics inside a net/http handler goroutine, which net/http's own recovery contains - it logs 'http: panic serving' and closes that"
+  },
+  {
+   "sha": "22e1ee8085952b4bdadf2928c187d665f6daff99",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Blanket defensive `defer recover()` around rType.Decoder.Decode, gated by GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY (default true, disabled for fuzzing). No specific panic is identified or fixed - the PR body says 'to improve resilience' and it is part of the xdsclient fuzzing effort (#8749). Reverting brings back only the absence of a safety net, RELEASE NOTES: N/A."
+  },
+  {
+   "sha": "39f16539d2463c05d52b4c44137831fd5f73f7d9",
+   "repo": "grpc/grpc-go",
+   "role": "introduce",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "This is the commit that CREATED the RBAC bypass fixed by 57c9ff14 - #9148 explicitly calls it 'a regression introduced in #9134'. It switched HeaderRegexMatcher.Match/pathRegexMatcher.match to unanchored re.MatchString and added CompileSafeRegex, but missed the rbac/ and httpfilter/ call sites, turning full-string authz matching into substring matching. The data race it removes is a concurrent wri"
+  },
+  {
+   "sha": "3d0dd1e30b6b354d7c8d86b26f52eda4ea45e3cb",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Dependency bump inside the cmd/protoc-gen-go-grpc submodule (grpc v1.79.3 -> v1.81.0) plus regenerated .pb.go version stamps. protoc-gen-go-grpc is a protoc plugin - it never runs a gRPC server, so the poc ('attacker sends crafted RPC requests to a gRPC server') describes nothing that exists here. Supply-chain hygiene for a build tool; reverting exposes no runtime path in this repo."
+  },
+  {
+   "sha": "4ee6ac46fada69c06576cee108b009689a000520",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Not an auth bypass. This is CLIENT-side: newConfigSelector was not building the ClientInterceptor chain for routes using a cluster_specifier_plugin. Client-side xDS HTTP filters are things like fault injection and gcp_authn - a client that skips its own filter simply fails to attach a token, it does not bypass any server-side control. The route config is chosen by the control plane, not by an atta"
+  },
+  {
+   "sha": "57c9ff14e05b535ee6995ba49bc882b287a175de",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Same commit as the external claim and correct for the same reasons: unanchored regexp.Compile in internal/xds/rbac/matchers.go and internal/xds/httpfilter/extconfig.go made xDS SafeRegexMatch a substring match, so an ALLOW rule partially matching a principal short-circuited a DENY. access_control / CWE-863 is the right labelling."
+  },
+  {
+   "sha": "58bbf8ab36838ce1454da092ac0dad350b0162ea",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "The actual advisory fix (GHSA-p77j-4mvh-x3m3). Pre-fix handleStream did `if sm != \"\" && sm[0] == '/' { sm = sm[1:] }` and otherwise proceeded, so a :path without a leading slash reached the handler while path-prefix deny rules in interceptors (e.g. grpc/authz) had already been evaluated against the non-canonical form. Now rejected with Unimplemented. CWE-287 is imprecise (CWE-863 / path canonicali"
+  },
+  {
+   "sha": "609310837bbc7fab1553fa53f2d1312bd7d85275",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Genuine memory-leak bug (interceptors leaked on in-place RDS updates because usableRouteConfiguration was overwritten in an atomic.Pointer without stopping the old one), but the trigger is the xDS management server pushing route updates, not client traffic. The control plane already fully owns the server's configuration, so 'untrusted control plane DoS' is not a meaningful threat model here, and g"
+  },
+  {
+   "sha": "69b542a536202cb28bd8caa4a9d55324ecfc9b2d",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Genuine certificate-validation weakness. TLSInfo.ValidateAuthority looped over ALL of t.State.PeerCertificates and returned nil if ANY of them (intermediates, and whatever else the peer chose to send in the chain) passed VerifyHostname, so a per-RPC :authority override could be validated against a non-leaf cert. Now only PeerCertificates[0]. Release-noted as a bug fix; reverting restores the loose"
+  },
+  {
+   "sha": "78601448414bcbccea14b453b5021631592bea46",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Not a memory leak. The change adds r.Close() on error paths in rpc_util.go decompress() so mem.BufferSlice buffers go back to the sync.Pool instead of being reclaimed by the GC. Failing to return a pooled buffer costs allocation/GC pressure, never unbounded growth - 'until the system runs out of memory' is wrong. RELEASE NOTES: None; this is pool-reuse efficiency."
+  },
+  {
+   "sha": "83728f5ca723fa46aade15675594418f396db991",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Confirmed genuine. ParseFramedMsg (credentials/alts/internal/conn/common.go) only enforces an UPPER length bound, so a peer-declared frame length of 0-3 yields msg shorter than 4 and `binary.LittleEndian.Uint32(msg[:msgTypeFieldSize])` panics with slice-bounds-out-of-range. This runs in the transport reader goroutine with no recover, so it is an unrecoverable process-level crash reachable from a r"
+  },
+  {
+   "sha": "94b9449eb2ebd46403dc7f4f1068a4d60df1f6f8",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Real over-permissive authorization. Pre-fix authenticatedMatcher.match fell through from non-matching URI SANs to DNS SANs and then Subject DN, so a peer cert whose URI SAN should have been authoritative could still satisfy an ALLOW policy via its Subject DN. gRFC A41 requires first-non-empty-source-only. Maintainers state it 'allows an authorization bypass in certain scenarios'. Reverting restore"
+  },
+  {
+   "sha": "ad8bd717dd40acb92d0725e7a0e19e14824d626b",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Primarily dead-code removal: UpdateAddresses is no longer reachable in the xDS LB tree after pick_first became the universal leaf policy, so it becomes a logging no-op and endpointInfo drops from atomic.Pointer to a plain pointer. The incidental leak fix (removing scw from the endpoint map on Shutdown) is bounded by EDS/resolver churn, not request traffic, and the claim's own severity is 'low'. RE"
+  },
+  {
+   "sha": "b3603ab68a95bab39cb27e36a8a74826a8307a15",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "HTTP/2 spec-compliance fix (#8766): the server now pre-builds the early-abort header fields and checks them against the peer's advertised SETTINGS_MAX_HEADER_LIST_SIZE, falling back to RST_STREAM. The only consequence of the old behaviour is that the CLIENT that advertised the tiny limit treats the oversized response headers as a protocol error and tears down its own connection. Self-inflicted on "
+  },
+  {
+   "sha": "c754bf92cb55ef739c397e8583e823ab09e5b9c3",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Correctness fix in brand-new internal code (ready_reader.go was added days earlier by #8964); its only non-test consumer is credentials/alts/internal/conn/record.go, which falls through to a blocking p.Conn.Read that does surface io.EOF. Impact is a client channel briefly not noticing a peer's graceful FIN - a normal peer action, not an attack, and no unbounded loop or leak. RELEASE NOTES: N/A."
+  },
+  {
+   "sha": "c9d52ee6110c95abae60dc89524d56cc619ec2ac",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Adds a spec-compliance validation that the sum of LbEndpoint weights in one locality stays <= MaxUint32, accumulating in a uint64 so no overflow happens even in the check. Input comes from the xDS control plane (trusted config source), and the consequence of the un-validated case is skewed weighted LB, not a crash. Validation hardening with no exploitable pre-existing state."
+  },
+  {
+   "sha": "db35da8bc5e8dcfcb57b94e9be0fba306710cc77",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Resource-hygiene cleanup, not an exploitable leak. On the server side the parent already had `ctx, cancel := context.WithTimeout(...); defer cancel()`, which tears down the DoHandshake stream regardless - Close() only does stream.CloseSend(), it does not release the handshake semaphore. On the client side the WithCancel child hangs off the dial connectCtx, which grpc cancels right after connection"
+  },
+  {
+   "sha": "e80524df97599752f770e6e1bce3b9cc0240d2c1",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "The claim's premise is factually wrong: the 8KB limit is gated on GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE, which boolFromEnv defaults to FALSE. Default behaviour after this commit is still 16MB; the release note says it will flip in v1.82.0. Reverting changes nothing an operator sees by default. Opt-in future hardening."
+  },
+  {
+   "sha": "f1d1ce56feebe21c14d4d692ebf202b395872582",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "high",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Confirmed and arguably under-rated. Pre-fix code was `ip, _ := netip.ParseAddr(data.peerInfo.Addr.String())` on a string like '10.0.0.1:8080' - it ALWAYS failed for TCP peers, leaving the zero Addr, so ipNet.Contains always returned false. Every remote_ip/local_ip RBAC matcher was dead: source-IP DENY policies silently never matched and let blocked peers through. Real, always-on authorization bypa"
+  },
+  {
+   "sha": "fa4c702b5380b1c702e08804fec9be301c0a0a1b",
+   "repo": "grpc/grpc-go",
+   "role": "context",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Threads errors out of the matcher interface so DENY engines fail closed. Defensive hardening: after f1d1ce56 (#8990) added net.SplitHostPort, netip.ParseAddr only fails for non-IP peers (unix sockets, custom net.Addr), and an IP-CIDR DENY rule is semantically inapplicable to those anyway. No attacker can make their own TCP peer address unparseable. RELEASE NOTES: N/A. Right instinct, but no pre-ex"
+  },
+  {
+   "sha": "fd539615a762f795c2c316e7f75f32eac31a578a",
+   "repo": "grpc/grpc-go",
+   "role": "fix",
+   "confidence": "medium",
+   "source": "matrix-panel",
+   "subject": "",
+   "rationale": "Verified the pre-fix state: cdsBalancer held a single xdsHIPtr built from the TOP-LEVEL cluster's SecurityConfig and ccWrapper.NewSubConn stamped it onto every address for every leaf under an aggregate cluster. An aggregate cluster with no transport_socket yields NewHandshakeInfo(nil,nil,nil,false) -> fallback creds, so leaf clusters mandating mTLS + SAN matchers were connected without their confi"
+  }
+ ]
+}

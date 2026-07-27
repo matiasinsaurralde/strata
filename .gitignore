@@ -225,12 +225,57 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# ---------------------------------------------------------------------------
 # strata: local-only artifacts
-# evals.md — design doc, intentionally not committed
+# ---------------------------------------------------------------------------
+# Internal design docs and working notes. Kept out of the public history on
+# purpose; they contain competitor comparisons and unreleased planning.
 evals.md
-# results/ — regenerable eval run outputs
+research.md
+plan.md
+nextsteps.md
+comparison.md
+improvement.md
+matrix.md
+progress_*.md
+summary_*.md
+notes.txt
+depthfirst.txt
+labelling-rubric.md
+
+# Regenerable eval and benchmark outputs.
 results/
-# labels.jsonl — hand-labelled ground truth; kept local for now
+
+# Head-to-head comparison scripts against third-party tools. Internal only.
+scripts/compare_context.py
+scripts/compare_matrix.py
+scripts/scan_matrix.py
+
+# Benchmark ground truth and human-labelling worklists.
 labels.jsonl
-# examples.txt — scratch notes
+labelling/
+baselines/
 examples.txt
+
+# Reserved evaluation holdouts and the dev configs that point at them. Both
+# reference local-only corpora (ghsa-commits/, labels.jsonl, baselines/), so
+# they would be dead references in a checkout.
+holdouts/
+configs/
+
+# Superseded prototypes, kept locally for reference only.
+legacy/
+
+# Bare git mirrors, SQLite state and content-addressed blobs. Large and
+# entirely reconstructible from the source repositories.
+.strata/
+
+# Scratch HTML review UIs.
+report.html
+relabel.html
+
+# Local Python importer state (bare mirrors, SQLite, content-addressed blobs)
+.strata/
+
+# Holdout source diffs are regenerable and may be large; manifests stay versioned.
+holdouts/*/diffs/

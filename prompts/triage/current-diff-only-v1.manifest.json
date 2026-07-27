@@ -1,0 +1,34 @@
+{
+  "manifest_version": "prompt-manifest-v1",
+  "prompt_id": "current-diff-only-v1",
+  "immutable": true,
+  "baseline": true,
+  "description": "Current eval.py diff-only YES/NO baseline, frozen byte-for-byte after removing each text file's single terminal LF.",
+  "protocol": {
+    "response_tokens": [
+      "YES",
+      "NO"
+    ],
+    "parse_mode": "exact_trimmed_token",
+    "malformed_is_negative": false
+  },
+  "files": {
+    "system": {
+      "path": "current-diff-only-v1.system.txt",
+      "sha256_file_bytes": "5a0d07ffd27eb54b09400196959dcb2559191938fbf23c7e72d04ae7654da935"
+    },
+    "user": {
+      "path": "current-diff-only-v1.user.txt",
+      "sha256_file_bytes": "c209bf56d3943721ccc7f86b6afb2367e07e564205699d25eb69f96f7e66475a"
+    }
+  },
+  "runtime_normalization": "remove_one_terminal_lf",
+  "prompt_hash_algorithm": "sha256(system_utf8 + NUL + user_template_utf8)",
+  "prompt_hash": "sha256:ea88a86e54b9543201a8b0b8faabbf2a6f0a2e1eb65e5f5a9b89a0d4b3bef81c",
+  "input_profiles": {
+    "D0": "raw diff, current control",
+    "D1": "normalized first-party diff",
+    "D2": "capped commit subject plus D1",
+    "D3": "capped full commit message plus D1"
+  }
+}

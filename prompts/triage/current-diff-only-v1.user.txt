@@ -1,0 +1,3 @@
+Does this git diff patch a security vulnerability?
+
+{diff}

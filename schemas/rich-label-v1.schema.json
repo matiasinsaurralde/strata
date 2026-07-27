@@ -1,0 +1,700 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://strata.local/schemas/rich-label-v1.schema.json",
+  "title": "RichLabelV1",
+  "description": "Append-only independent human annotation or adjudication. Draft records may be incomplete; frozen records enforce field-level ground truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_type",
+    "status",
+    "record_id",
+    "repository",
+    "commit_sha",
+    "parent_sha",
+    "label_version",
+    "verdict",
+    "role",
+    "rationale",
+    "annotator_id",
+    "created_at",
+    "independent",
+    "abstain_reason",
+    "root_cause",
+    "attacker_preconditions",
+    "impact",
+    "fix_effect",
+    "l0_class",
+    "cwe_id",
+    "severity",
+    "affected_paths",
+    "evidence",
+    "fix_completeness",
+    "invariant",
+    "source_record_hashes",
+    "source_annotators",
+    "notes",
+    "reachability_delta",
+    "failure_containment"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "rich-label-v1"
+    },
+    "record_type": {
+      "enum": [
+        "annotation",
+        "adjudication"
+      ]
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "frozen"
+      ]
+    },
+    "record_id": {
+      "$ref": "#/$defs/hash"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commit_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "parent_sha": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/git_sha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verdict": {
+      "enum": [
+        "YES",
+        "NO",
+        "ABSTAIN"
+      ]
+    },
+    "role": {
+      "oneOf": [
+        {
+          "enum": [
+            "fix",
+            "context",
+            "backport",
+            "introduce",
+            "other"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rationale": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "annotator_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "independent": {
+      "type": "boolean"
+    },
+    "abstain_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "root_cause": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "attacker_preconditions": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "impact": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "fix_effect": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "l0_class": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/l0_class"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cwe_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^CWE-[1-9][0-9]{0,5}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "severity": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/severity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "affected_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/relative_path"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "fix_completeness": {
+      "oneOf": [
+        {
+          "enum": [
+            "complete",
+            "multi",
+            "partial",
+            "unknown"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "invariant": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "source_record_hashes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/hash"
+      }
+    },
+    "source_annotators": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "notes": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "reachability_delta": {
+      "description": "Whether the patch shrinks the attacker-reachable set. Only 'narrows' can be a fix.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "verdict",
+            "before",
+            "after"
+          ],
+          "properties": {
+            "verdict": {
+              "enum": [
+                "narrows",
+                "widens",
+                "unchanged"
+              ]
+            },
+            "before": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "after": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failure_containment": {
+      "description": "Whether a repaired fault is absorbed by the runtime or framework. 'contained' cannot be a fix.",
+      "oneOf": [
+        {
+          "enum": [
+            "unrecoverable",
+            "contained",
+            "n/a"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "annotation"
+          }
+        },
+        "required": [
+          "record_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "independent": {
+            "const": true
+          },
+          "source_record_hashes": {
+            "maxItems": 0
+          },
+          "source_annotators": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "independent": {
+            "const": false
+          },
+          "status": {
+            "const": "frozen"
+          },
+          "source_record_hashes": {
+            "minItems": 2
+          },
+          "source_annotators": {
+            "minItems": 2
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "frozen"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "role": {
+            "enum": [
+              "fix",
+              "context",
+              "backport",
+              "introduce",
+              "other"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "frozen"
+          },
+          "verdict": {
+            "const": "YES"
+          }
+        },
+        "required": [
+          "status",
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "role": {
+            "enum": [
+              "fix",
+              "backport"
+            ]
+          },
+          "abstain_reason": {
+            "type": "null"
+          },
+          "root_cause": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attacker_preconditions": {
+            "type": "string",
+            "minLength": 1
+          },
+          "impact": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fix_effect": {
+            "type": "string",
+            "minLength": 1
+          },
+          "l0_class": {
+            "$ref": "#/$defs/l0_class"
+          },
+          "severity": {
+            "$ref": "#/$defs/severity"
+          },
+          "affected_paths": {
+            "minItems": 1
+          },
+          "evidence": {
+            "minItems": 1
+          },
+          "fix_completeness": {
+            "enum": [
+              "complete",
+              "multi",
+              "partial",
+              "unknown"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "frozen"
+          },
+          "verdict": {
+            "enum": [
+              "NO",
+              "ABSTAIN"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "root_cause": {
+            "type": "null"
+          },
+          "attacker_preconditions": {
+            "type": "null"
+          },
+          "impact": {
+            "type": "null"
+          },
+          "fix_effect": {
+            "type": "null"
+          },
+          "l0_class": {
+            "type": "null"
+          },
+          "cwe_id": {
+            "type": "null"
+          },
+          "severity": {
+            "type": "null"
+          },
+          "affected_paths": {
+            "maxItems": 0
+          },
+          "fix_completeness": {
+            "type": "null"
+          },
+          "invariant": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "frozen"
+          },
+          "verdict": {
+            "const": "NO"
+          }
+        },
+        "required": [
+          "status",
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "role": {
+            "enum": [
+              "context",
+              "introduce",
+              "other"
+            ]
+          },
+          "abstain_reason": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "frozen"
+          },
+          "verdict": {
+            "const": "ABSTAIN"
+          }
+        },
+        "required": [
+          "status",
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "abstain_reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000\\\\]+$"
+    },
+    "l0_class": {
+      "enum": [
+        "memory_safety",
+        "input_validation",
+        "injection",
+        "path_traversal",
+        "access_control",
+        "authentication",
+        "cryptography",
+        "resource_exhaustion",
+        "concurrency_toctou",
+        "deserialization",
+        "information_disclosure",
+        "logic_flaw",
+        "supply_chain",
+        "other"
+      ]
+    },
+    "severity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "source",
+        "score",
+        "vector"
+      ],
+      "properties": {
+        "level": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical",
+            "unknown"
+          ]
+        },
+        "source": {
+          "enum": [
+            "cvss",
+            "advisory",
+            "repository",
+            "human",
+            "model_estimate"
+          ]
+        },
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10
+        },
+        "vector": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "if": {
+        "not": {
+          "properties": {
+            "source": {
+              "const": "cvss"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "vector": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "revision_sha",
+        "path",
+        "start_line",
+        "end_line",
+        "quoted_span",
+        "supports"
+      ],
+      "properties": {
+        "revision": {
+          "enum": [
+            "parent",
+            "commit",
+            "head"
+          ]
+        },
+        "revision_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quoted_span": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "supports": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "failure_containment",
+              "reachability_delta",
+              "root_cause",
+              "attacker_preconditions",
+              "impact",
+              "fix_effect",
+              "l0_class",
+              "cwe_id",
+              "severity",
+              "affected_paths",
+              "fix_completeness",
+              "invariant"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
