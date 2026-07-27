@@ -218,7 +218,7 @@ def _relative_path(value: object, path: str) -> str:
     return result
 
 
-def _enum(value: object, enum_type: type[_E], path: str) -> _E:
+def _enum[E: Enum](value: object, enum_type: type[_E], path: str) -> _E:
     if isinstance(value, enum_type):
         return value
     if not isinstance(value, str):
@@ -241,7 +241,7 @@ def _check_keys(data: Mapping[str, Any], allowed: set[str], path: str) -> None:
         _fail(path, f"unknown fields: {', '.join(unknown)}")
 
 
-def _coerce_dataclass(value: object, cls: type[_D], path: str) -> _D:
+def _coerce_dataclass[D](value: object, cls: type[_D], path: str) -> _D:
     if isinstance(value, cls):
         return value
     if isinstance(value, Mapping) and hasattr(cls, "from_dict"):
@@ -905,9 +905,10 @@ class FindingV1(ContractMixin):
             _fail("decision_reason", "must explain the adjudicator decision")
         if self.l0_class is not None:
             object.__setattr__(self, "l0_class", _enum(self.l0_class, L0Class, "l0_class"))
-        if self.cwe_id is not None:
-            if not isinstance(self.cwe_id, str) or not _CWE_RE.fullmatch(self.cwe_id):
-                _fail("cwe_id", "must be null or have canonical form CWE-<positive integer>")
+        if self.cwe_id is not None and (
+            not isinstance(self.cwe_id, str) or not _CWE_RE.fullmatch(self.cwe_id)
+        ):
+            _fail("cwe_id", "must be null or have canonical form CWE-<positive integer>")
         if self.severity is not None:
             object.__setattr__(
                 self, "severity", _coerce_dataclass(self.severity, SeverityV1, "severity")

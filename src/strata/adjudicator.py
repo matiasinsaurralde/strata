@@ -1660,7 +1660,9 @@ def validate_adjudication(
             clean_severity = {"level": level, "source": source}
             score = severity.get("score")
             if score is not None:
-                if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0.0 <= float(score) <= 10.0:
+                # `bool` is an `int`, and True would otherwise validate as 1.0.
+                numeric = not isinstance(score, bool) and isinstance(score, (int, float))
+                if not numeric or not 0.0 <= float(score) <= 10.0:
                     errors.append("severity.score must be a number from 0 to 10")
                 else:
                     clean_severity["score"] = float(score)

@@ -7,18 +7,18 @@ import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
 
 from strata.contracts import canonical_hash, canonical_json
 
 
-class Split(str, Enum):
+class Split(StrEnum):
     DEVELOPMENT = "development"
     HOLDOUT = "holdout"
 
 
-class AssignmentMethod(str, Enum):
+class AssignmentMethod(StrEnum):
     GROUPED_HASH = "grouped_hash"
     TEMPORAL = "temporal"
 

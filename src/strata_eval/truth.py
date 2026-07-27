@@ -6,11 +6,12 @@ confound. This module turns the adjudicated commits from the four-repository
 matrix into a fixture, and scoring against it is free.
 
 **What the fixture is.** A commit-level role assignment for every commit that
-this pipeline, or another tool it was compared against, claimed as a security
-fix — adjudicated by LLM panels working from bare mirrors. Two panels overlapped on 13 commits and agreed on 12 roles
-(and on all 13 for the binary fix-vs-not question), so the labels are at least
-reproducible. The adversarial gin panel — investigator plus a refuter per
-commit — takes precedence where the two disagree.
+this pipeline, or another tool it was compared against, claimed as a
+security fix — adjudicated by LLM panels working from bare mirrors. Two
+panels overlapped on 13 commits and agreed on 12 roles (and on all 13 for the
+binary fix-vs-not question), so the labels are at least reproducible. The
+adversarial panel — investigator plus a refuter per commit — takes precedence
+where the two disagree.
 
 **What the fixture is not.** Human ground truth, and not a random sample. It
 covers only commits *some tool flagged*, so:

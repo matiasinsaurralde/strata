@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -87,7 +87,10 @@ class TriageRequest:
 @dataclass(frozen=True, slots=True)
 class BackendResponse:
     text: str
-    usage: TokenUsageV1 = TokenUsageV1()
+    # `field(default_factory=...)` rather than a shared instance: the default
+    # is evaluated once at class creation and would otherwise be the same
+    # object on every response.
+    usage: TokenUsageV1 = field(default_factory=TokenUsageV1)
     request_id: str | None = None
     retry_count: int = 0
     cache_hit: bool = False

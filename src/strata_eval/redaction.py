@@ -2,7 +2,7 @@
 
 The experiment answers a specific question: how much of the classifier's recall
 rides on *disclosure artefacts* rather than on the code? The answer is
-``R(M0) − R(M1)`` on the ``announced`` stratum, and a gap above 15pp means the
+``R(M0) - R(M1)`` on the ``announced`` stratum, and a gap above 15pp means the
 pooled number is not trustworthy and the ``quiet`` stratum must carry all the
 weight.
 

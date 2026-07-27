@@ -392,10 +392,8 @@ class Store:
                     temporary.write(data)
                     temporary.flush()
                     os.fsync(temporary.fileno())
-                try:
+                with contextlib.suppress(FileExistsError):
                     os.replace(temporary_name, destination)
-                except FileExistsError:
-                    pass
             finally:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(temporary_name)
@@ -670,7 +668,8 @@ class Store:
                     committer_email = excluded.committer_email,
                     committer_time = excluded.committer_time,
                     changed_paths_json = excluded.changed_paths_json,
-                    patch_blob_hash = COALESCE(commits.patch_blob_hash, excluded.patch_blob_hash),
+                    patch_blob_hash = COALESCE(
+                        commits.patch_blob_hash, excluded.patch_blob_hash),
                     patch_id = COALESCE(commits.patch_id, excluded.patch_id),
                     metadata_json = excluded.metadata_json
                 """,

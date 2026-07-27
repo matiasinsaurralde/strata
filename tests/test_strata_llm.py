@@ -18,6 +18,7 @@ from openai import APIConnectionError, APIStatusError, RateLimitError
 from strata.env import ProfileConflictError, resolve_endpoint_profile
 from strata.llm import (
     LLMConfig,
+    LLMHTTPError,
     LLMOversizeError,
     LLMQuotaError,
     LLMResponseError,
@@ -206,8 +207,11 @@ class TestTransportRetries:
 
     def test_client_errors_are_not_retryable(self) -> None:
         client, sdk = _client(_status_error(400, "bad request"))
-        with pytest.raises(Exception):
+        # A 4xx is the caller's fault and must surface as a terminal
+        # LLMError, not be retried into the budget.
+        with pytest.raises(LLMHTTPError) as excinfo:
             client.complete([{"role": "user", "content": "x"}])
+        assert excinfo.value.status == 400
         assert len(sdk.calls) == 1
 
 

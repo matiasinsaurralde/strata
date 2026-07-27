@@ -6,7 +6,7 @@ import re
 import shlex
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .contracts import InputProfile, sha256_text
 
@@ -18,7 +18,7 @@ DEFAULT_SUBJECT_BYTES = 512
 DEFAULT_MESSAGE_BYTES = 8_192
 
 
-class ChangeKind(str, Enum):
+class ChangeKind(StrEnum):
     SOURCE = "source"
     TEST = "test"
     DOCS = "docs"
@@ -30,7 +30,7 @@ class ChangeKind(str, Enum):
     OTHER = "other"
 
 
-class InputBuildStatus(str, Enum):
+class InputBuildStatus(StrEnum):
     READY = "ready"
     EMPTY = "empty"
     EMPTY_FIRST_PARTY = "empty_first_party"
@@ -359,8 +359,10 @@ def classify_change_kind(path: str, patch: str = "") -> ChangeKind:
         return ChangeKind.DOCS
     if (
         filename in _DEPENDENCY_NAMES
-        or (filename.startswith(("requirements", "constraints"))
-        and filename.endswith((".txt", ".in")))
+        or (
+            filename.startswith(("requirements", "constraints"))
+            and filename.endswith((".txt", ".in"))
+        )
         or filename.endswith((".lock", ".sum"))
     ):
         return ChangeKind.DEPENDENCY

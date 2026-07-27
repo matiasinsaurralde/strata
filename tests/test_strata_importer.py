@@ -26,8 +26,7 @@ def git(repository: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repository), *arguments],
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         env=environment,
         timeout=10,
@@ -48,8 +47,7 @@ def import_repository_source(tmp_path: Path) -> Path:
     subprocess.run(
         ["git", "-C", str(repository), "init", "-b", "main"],
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=10,
     )
     (repository / "app.txt").write_text("safe root\n", encoding="utf-8")

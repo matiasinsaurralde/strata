@@ -230,9 +230,10 @@ def validate_revision(revision: str, *, allow_range: bool = False) -> str:
             validate_revision(left)
             validate_revision(right)
             return revision
-    if _FULL_SHA_RE.fullmatch(revision) or _SAFE_REV_RE.fullmatch(revision):
-        if ".." not in revision and "//" not in revision and not revision.endswith(("/", ".")):
-            return revision
+    if (_FULL_SHA_RE.fullmatch(revision) or _SAFE_REV_RE.fullmatch(revision)) and (
+        ".." not in revision and "//" not in revision and not revision.endswith(("/", "."))
+    ):
+        return revision
     raise InvalidRevisionError(f"unsupported revision syntax: {revision!r}")
 
 
@@ -626,14 +627,10 @@ class GitRepository:
         """Enumerate newest-first commits from a branch, date, or explicit range."""
         if last is not None and (last <= 0 or last > HARD_MAX_COMMITS):
             raise ValueError(f"last must be between 1 and {HARD_MAX_COMMITS}")
-        if since is not None:
-            if (
-                not since
-                or len(since) > 128
-                or _contains_control(since)
-                or since.startswith("-")
-            ):
-                raise ValueError("invalid --since value")
+        if since is not None and (
+            not since or len(since) > 128 or _contains_control(since) or since.startswith("-")
+        ):
+            raise ValueError("invalid --since value")
         if revision_range is not None and revision is not None:
             raise ValueError("revision and revision_range are mutually exclusive")
 

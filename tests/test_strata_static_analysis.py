@@ -100,8 +100,12 @@ def test_availability_probes_do_not_claim_missing_tools() -> None:
 
 
 def test_ablation_reports_available_unavailable_and_probe_only_arms() -> None:
-    no_tools = lambda _name: None
-    no_modules = lambda _name: None
+    def no_tools(_name):
+        return None
+
+    def no_modules(_name):
+        return None
+
     baseline = TextBaselineAnalyzer()
     tree = TreeSitterAnalyzer(which=no_tools, find_spec=no_modules)
     unavailable_codeql = CodeQLAnalyzer(which=no_tools, find_spec=no_modules)

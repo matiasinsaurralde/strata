@@ -1,7 +1,8 @@
 """End-to-end repository scan: prefilter → triage → adjudicate → compile.
 
-This wires the full cascade together. Its shape is dictated by base rates: at ~1.5% prevalence a single-stage classifier needs
-an FPR roughly 10x better than published SOTA to be usable, so stage 1 is tuned
+This wires the full cascade together. Its shape is dictated by base rates: at
+~1.5% prevalence a single-stage classifier needs an FPR roughly 10x better than
+published SOTA to be usable, so stage 1 is tuned
 for recall and stage 2 — which only ever sees the survivors — does the precision
 work and can afford 30-100x the per-commit spend.
 
@@ -314,12 +315,14 @@ def scan_repository(
             else:
                 reason = str(result.decision.get("abstain_reason") or "unspecified")
                 outcome.adjudication_abstain.append((sha, reason))
-            if settings.max_cost_usd is not None:
-                if pricing.estimate(usage) >= settings.max_cost_usd:
-                    say("cost ceiling reached; stopping adjudication")
-                    for pending in futures:
-                        pending.cancel()
-                    break
+            if (
+                settings.max_cost_usd is not None
+                and pricing.estimate(usage) >= settings.max_cost_usd
+            ):
+                say("cost ceiling reached; stopping adjudication")
+                for pending in futures:
+                    pending.cancel()
+                break
 
     outcome.usage = usage
     outcome.cost_usd = pricing.estimate(usage)

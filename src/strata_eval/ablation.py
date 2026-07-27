@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -187,10 +188,8 @@ class DecisionCache:
                     os.fsync(output.fileno())
                 os.replace(temporary_name, path)
             finally:
-                try:
+                with contextlib.suppress(FileNotFoundError):
                     os.unlink(temporary_name)
-                except FileNotFoundError:
-                    pass
 
 
 def _cacheable_decision(decision: TriageDecisionV1) -> bool:
@@ -419,7 +418,6 @@ def summarize_profile(
     overall = summarize_binary(scored)
     strata = per_stratum_summaries(scored, "message_class")
     quiet = strata.get("quiet")
-    eligible = overall.eligible
     # Divide by rows that actually produced a call, not by rows that were
     # merely eligible: an errored row contributes no tokens, so the old mean
     # made a profile that failed more often look cheaper *and* — through the
