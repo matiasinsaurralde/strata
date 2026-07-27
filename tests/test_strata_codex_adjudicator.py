@@ -415,3 +415,44 @@ class TestSandboxOnlyGuidance:
 
         rendered = _SHELL_GUIDE.format(commit="a" * 40, parent="b" * 40, tools="  rg")
         assert "a" * 40 in rendered and "{" not in rendered.replace("{}", "")
+
+
+class TestCliExposesTheBackend:
+    """The best-measured configuration must be reachable from the CLI.
+
+    ``ScanConfig`` has carried ``adjudicator``/``sandbox`` since the sandboxed
+    backend landed, but nothing on the ``strata scan`` command line set them —
+    so a fresh clone could only ever run the chat adjudicator, and the
+    sandboxed backend was dead code from a user's point of view.
+    """
+
+    def _scan_args(self, argv: list[str]):
+        from strata.__main__ import build_parser
+
+        return build_parser().parse_args(["scan", "--repo", ".", *argv])
+
+    def test_adjudicator_defaults_to_chat(self):
+        assert self._scan_args([]).adjudicator == "chat"
+
+    def test_codex_is_selectable(self):
+        assert self._scan_args(["--adjudicator", "codex"]).adjudicator == "codex"
+
+    def test_sandbox_defaults_to_read_only(self):
+        assert self._scan_args([]).sandbox == "read-only"
+
+    @pytest.mark.parametrize("mode", ["read-only", "workspace-write", "full-access"])
+    def test_every_sandbox_mode_the_adjudicator_accepts_is_selectable(self, mode):
+        from strata.codex_adjudicator import _SANDBOX_MODES
+
+        assert mode in _SANDBOX_MODES
+        assert self._scan_args(["--sandbox", mode]).sandbox == mode
+
+    def test_the_flags_reach_scan_config(self):
+        """Parsing them is not enough; they have to be threaded through."""
+        import inspect
+
+        from strata import __main__
+
+        source = inspect.getsource(__main__._run_scan)
+        assert "adjudicator=arguments.adjudicator" in source
+        assert "sandbox=arguments.sandbox" in source

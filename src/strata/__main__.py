@@ -256,6 +256,28 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--max-candidates", type=_non_negative_int, default=None)
     scan_parser.add_argument("--cache-root", type=Path)
     scan_parser.add_argument(
+        "--adjudicator",
+        choices=("chat", "codex"),
+        default="chat",
+        help=(
+            "stage-2 backend. 'chat' is the eight-tool JSON adjudicator. "
+            "'codex' runs the same contract inside a sandboxed shell with a "
+            "real worktree, which answers containment and reachability by "
+            "looking rather than by inference -- higher precision, but "
+            "roughly six times the latency per candidate"
+        ),
+    )
+    scan_parser.add_argument(
+        "--sandbox",
+        choices=("read-only", "workspace-write", "full-access"),
+        default="read-only",
+        help=(
+            "sandbox mode for --adjudicator codex. Writes unlock semgrep, "
+            "go vet and gopls; 'full-access' also restores network, so use it "
+            "only on repositories you would clone and build anyway"
+        ),
+    )
+    scan_parser.add_argument(
         "--include-leads",
         action="store_true",
         help="emit unfixed candidate sites (dual-use; withheld by default)",
@@ -303,6 +325,8 @@ def _run_scan(arguments: argparse.Namespace) -> int:
             max_cost_usd=arguments.max_cost,
             max_candidates=arguments.max_candidates,
             pricing=ModelPricing(1.25, 10.0, 0.125),
+            adjudicator=arguments.adjudicator,
+            sandbox=arguments.sandbox,
         ),
         cache_root=str(arguments.cache_root or ".strata/repos"),
         progress=None if arguments.quiet else (lambda m: print(m, file=sys.stderr)),
