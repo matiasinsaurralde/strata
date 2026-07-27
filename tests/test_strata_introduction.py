@@ -117,8 +117,15 @@ def test_no_parent_anchor_declines():
     finding = {
         "commit_sha": "fixsha",
         "commit_date": "2024-01-01T00:00:00+00:00",
-        "evidence": [{"revision": "commit", "revision_sha": "fixsha", "path": "a.go",
-                      "start_line": 5, "end_line": 5}],
+        "evidence": [
+            {
+                "revision": "commit",
+                "revision_sha": "fixsha",
+                "path": "a.go",
+                "start_line": 5,
+                "end_line": 5,
+            }
+        ],
     }
     result = _one(FakeRepo(), finding)
     assert result["introduced_to_fixed"]["method"] == "declined_no_signal"

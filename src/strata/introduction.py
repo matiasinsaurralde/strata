@@ -68,7 +68,7 @@ def _parent_anchors(finding: Mapping[str, Any]) -> list[dict[str, Any]]:
         try:
             start = int(item.get("start_line") or 0)
             end = int(item.get("end_line") or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if not path or not parent_sha or start < 1 or end < start:
             continue

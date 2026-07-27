@@ -514,8 +514,7 @@ def build_debug_report(outcome: ScanOutcome) -> dict[str, Any]:
             "wall_clock_s": round(outcome.wall_clock_s, 1),
         },
         "findings": [
-            {"sha": r["sha"], "subject": r["subject"]}
-            for r in by_verdict.get("YES", [])
+            {"sha": r["sha"], "subject": r["subject"]} for r in by_verdict.get("YES", [])
         ],
         "abstained": [
             {
@@ -529,15 +528,10 @@ def build_debug_report(outcome: ScanOutcome) -> dict[str, Any]:
             for r in abstains
         ],
         "rejected": [
-            {"sha": r["sha"], "subject": r["subject"]}
-            for r in by_verdict.get("NO", [])
+            {"sha": r["sha"], "subject": r["subject"]} for r in by_verdict.get("NO", [])
         ],
-        "errors": [
-            {"sha": sha, "traceback": tb} for sha, tb in outcome.adjudication_errors
-        ],
-        "triage_errors": [
-            {"sha": sha, "error": err} for sha, err in outcome.triage_errors
-        ],
+        "errors": [{"sha": sha, "traceback": tb} for sha, tb in outcome.adjudication_errors],
+        "triage_errors": [{"sha": sha, "error": err} for sha, err in outcome.triage_errors],
     }
 
 
