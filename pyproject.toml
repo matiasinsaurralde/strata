@@ -11,6 +11,11 @@ dependencies = [
     "tree-sitter-language-pack>=1.13.3",
 ]
 
+[project.optional-dependencies]
+codex = [
+    "openai-codex>=0.144.4",
+]
+
 [project.scripts]
 strata = "strata.__main__:main"
 strata-eval = "strata_eval.__main__:main"
