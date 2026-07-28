@@ -14,6 +14,8 @@ from typing import Any
 
 from .git_repo import DEFAULT_FETCH_TIMEOUT
 from .importer import Importer, ImportLimits
+from .progress import DEFAULT_INTERVAL as DEFAULT_PROGRESS_INTERVAL
+from .progress import NullSink, PlainRenderer, ProgressSink
 from .store import Store, canonical_json
 
 
@@ -352,7 +354,30 @@ def build_parser() -> argparse.ArgumentParser:
             "evaluation; does not affect the scan"
         ),
     )
-    scan_parser.add_argument("--quiet", action="store_true")
+    scan_parser.add_argument(
+        "--progress",
+        choices=("auto", "plain", "none"),
+        default="auto",
+        help=(
+            "progress reporting on stderr. 'plain' writes one timestamped line "
+            "per update -- safe for logs, pipes and CI, since nothing is "
+            "rewritten in place. 'none' silences it. 'auto' currently selects "
+            "plain, and is where a terminal progress bar will be chosen once it "
+            "exists. Never written to stdout, which carries the funnel JSON"
+        ),
+    )
+    scan_parser.add_argument(
+        "--progress-interval",
+        type=_positive_float,
+        default=DEFAULT_PROGRESS_INTERVAL,
+        metavar="SECONDS",
+        help=(
+            "minimum seconds between progress lines "
+            f"(default: {DEFAULT_PROGRESS_INTERVAL:g}). Raise it to shrink CI "
+            "logs; the first and last line of every stage are always emitted"
+        ),
+    )
+    scan_parser.add_argument("--quiet", action="store_true", help="alias for --progress none")
     return parser
 
 
@@ -420,6 +445,17 @@ def _scan_config_from_arguments(arguments: argparse.Namespace) -> Any:
     )
 
 
+def _progress_sink_from_arguments(arguments: argparse.Namespace) -> ProgressSink:
+    """Choose a progress renderer.
+
+    Progress goes to stderr unconditionally: stdout carries the funnel JSON that
+    wrappers parse, and a progress line interleaved with it would break them.
+    """
+    if arguments.quiet or arguments.progress == "none":
+        return NullSink()
+    return PlainRenderer(sys.stderr)
+
+
 def _run_scan(arguments: argparse.Namespace) -> int:
     target = _scan_target(arguments)
 
@@ -432,7 +468,8 @@ def _run_scan(arguments: argparse.Namespace) -> int:
         client=client,
         config=_scan_config_from_arguments(arguments),
         cache_root=str(arguments.cache_root or ".strata/repos"),
-        progress=None if arguments.quiet else (lambda m: print(m, file=sys.stderr)),
+        progress_sink=_progress_sink_from_arguments(arguments),
+        progress_interval=arguments.progress_interval,
     )
     destination = arguments.out
     destination.parent.mkdir(parents=True, exist_ok=True)

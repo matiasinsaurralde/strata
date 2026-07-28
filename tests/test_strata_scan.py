@@ -15,9 +15,21 @@ from typing import Any
 
 import pytest
 
-from strata.__main__ import _scan_config_from_arguments, _scan_target, build_parser
+from strata.__main__ import (
+    _progress_sink_from_arguments,
+    _scan_config_from_arguments,
+    _scan_target,
+    build_parser,
+)
 from strata.git_repo import DEFAULT_FETCH_TIMEOUT
 from strata.llm import ChatResponse, TokenUsage
+from strata.progress import (
+    DEFAULT_INTERVAL,
+    NOTE,
+    STAGE_FINISHED,
+    NullSink,
+    PlainRenderer,
+)
 from strata.scan import ScanConfig, scan_repository
 
 
@@ -198,3 +210,74 @@ def test_scan_repository_grounds_local_repo_without_cloning(tmp_path: Path) -> N
     funnel = outcome.funnel()
     assert funnel["prefilter"]["seen"] == 2
     assert client.calls >= 1
+
+
+# --- progress reporting (offline end-to-end) -----------------------------
+
+
+def test_scan_repository_reports_each_stage_with_its_totals(tmp_path: Path) -> None:
+    source = tmp_path / "repo"
+    _init_local_repo(source)
+    events: list[Any] = []
+
+    scan_repository(
+        str(source),
+        client=_FakeClient(),
+        config=ScanConfig(last=10, fetch_timeout=5.0),
+        cache_root=str(tmp_path / "cache"),
+        progress_sink=SimpleNamespace(emit=events.append),
+    )
+
+    # Stages are reported in pipeline order, each one before the next begins.
+    order = [e.stage for e in events]
+    assert order.index("git") < order.index("prefilter") < order.index("triage")
+
+    finished = {e.stage: e for e in events if e.kind == STAGE_FINISHED}
+    assert finished["prefilter"].done == finished["prefilter"].total == 2
+    assert finished["triage"].done == finished["triage"].total == 2
+    assert "admitted" in finished["prefilter"].message
+    assert finished["triage"].stage_elapsed_s >= 0.0
+    # The tail is announced before the fact, so the wait for it is not a mystery.
+    notes = [e.message for e in events if e.kind == NOTE]
+    assert "compiling security context" in notes
+    assert any(message.startswith("done · ") for message in notes)
+
+
+def test_scan_repository_still_accepts_the_legacy_string_callback(tmp_path: Path) -> None:
+    """``scripts/scan_gin.py`` passes a plain callable; it keeps getting summaries."""
+    source = tmp_path / "repo"
+    _init_local_repo(source)
+    lines: list[str] = []
+
+    scan_repository(
+        str(source),
+        client=_FakeClient(),
+        config=ScanConfig(last=10, fetch_timeout=5.0),
+        cache_root=str(tmp_path / "cache"),
+        progress=lines.append,
+    )
+
+    assert any(line.startswith("grounded on local checkout:") for line in lines)
+    assert any(line.startswith("prefilter: admitted 2/2") for line in lines)
+    # Per-item progress is not forced onto a caller that asked for summaries.
+    assert len(lines) < 12
+
+
+def test_scan_cli_selects_a_plain_renderer_by_default() -> None:
+    assert isinstance(_progress_sink_from_arguments(_scan_arguments()), PlainRenderer)
+
+
+@pytest.mark.parametrize("flag", ["--quiet", "--progress=none"])
+def test_scan_cli_silences_progress_on_request(flag: str) -> None:
+    assert isinstance(_progress_sink_from_arguments(_scan_arguments(flag)), NullSink)
+
+
+def test_scan_cli_defaults_and_overrides_the_progress_interval() -> None:
+    assert _scan_arguments().progress_interval == DEFAULT_INTERVAL == 5.0
+    assert _scan_arguments("--progress-interval", "30").progress_interval == 30.0
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_scan_cli_rejects_a_non_positive_progress_interval(value: str) -> None:
+    with pytest.raises(SystemExit):
+        _scan_arguments("--progress-interval", value)

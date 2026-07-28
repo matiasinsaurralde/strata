@@ -38,6 +38,7 @@ from .git_repo import DEFAULT_FETCH_TIMEOUT, GitCommit, GitRepository
 from .introduction import attribute_introductions
 from .llm import LLMOversizeError, ModelPricing, OpenAIChatClient, TokenUsage
 from .prefilter import PrefilterStats, prefilter_commit
+from .progress import DEFAULT_INTERVAL, CallbackSink, InFlight, ProgressSink, Reporter
 from .triage import OpenAICompatibleTriageBackend, TriageRunner
 
 LOGGER = logging.getLogger(__name__)
@@ -167,6 +168,10 @@ def _repo_ref(repository: GitRepository, head_sha: str, branch: str) -> RepoRef:
     )
 
 
+def _legacy_sink(progress: Callable[[str], None] | None) -> ProgressSink | None:
+    return None if progress is None else CallbackSink(progress)
+
+
 def _candidate_from(commit: GitCommit, repository_url: str) -> dict[str, Any]:
     return {
         "repository": repository_url,
@@ -184,6 +189,8 @@ def scan_repository(
     config: ScanConfig | None = None,
     cache_root: str = ".strata/repos",
     progress: Callable[[str], None] | None = None,
+    progress_sink: ProgressSink | None = None,
+    progress_interval: float = DEFAULT_INTERVAL,
 ) -> ScanOutcome:
     """Scan a repository and compile its security context.
 
@@ -192,51 +199,78 @@ def scan_repository(
         client: Chat client used by both model stages.
         config: Scan knobs; defaults are suitable for a mid-sized repository.
         cache_root: Where the bare mirror lives.
-        progress: Optional callback for human-readable progress lines.
+        progress: Optional callback receiving stage summaries as strings. Kept
+            for callers written against the original signature; ``progress_sink``
+            supersedes it and takes precedence when both are given.
+        progress_sink: Structured progress consumer -- see :mod:`strata.progress`.
+            This is the one that reports *during* a stage rather than after it.
+        progress_interval: Seconds between per-item progress events.
 
     Returns:
         A :class:`ScanOutcome` whose ``context`` is the compiled artifact.
     """
     settings = config or ScanConfig()
     pricing = settings.pricing or ModelPricing(1.25, 10.0, 0.125)
-    say = progress or (lambda _message: None)
+    sink = progress_sink if progress_sink is not None else _legacy_sink(progress)
+    reporter = Reporter(sink, interval=progress_interval)
+    say = reporter.note
     started = time.monotonic()
 
-    repository = GitRepository(
-        source,
-        cache_root=cache_root,
-        fetch_timeout=settings.fetch_timeout,
-        in_place=True,
-    )
-    snapshot = repository.fetch()
-    origin = "grounded on local checkout" if repository.in_place else "mirror ready"
-    say(f"{origin}: {snapshot.head_sha[:12]} on {snapshot.default_branch}")
+    # The mirror clone and the rev-list are the first place a scan can sit
+    # silently for minutes, so they are timed like any other stage even though
+    # neither can be counted.
+    with reporter.stage("git") as git_stage:
+        repository = GitRepository(
+            source,
+            cache_root=cache_root,
+            fetch_timeout=settings.fetch_timeout,
+            in_place=True,
+        )
+        snapshot = repository.fetch()
+        origin = "grounded on local checkout" if repository.in_place else "mirror ready"
+        say(f"{origin}: {snapshot.head_sha[:12]} on {snapshot.default_branch}", stage="git")
 
-    shas = repository.enumerate_shas(last=settings.last, revision=settings.revision)
-    say(f"enumerated {len(shas)} commits")
+        shas = repository.enumerate_shas(last=settings.last, revision=settings.revision)
+        git_stage.finish(f"enumerated {len(shas)} commits")
 
     # --- stage 0: deterministic prefilter (free) -------------------------
     prefilter = PrefilterStats()
     admitted: list[GitCommit] = []
-    for sha in shas:
-        try:
-            commit = repository.get_commit(sha)
-        except Exception as exc:  # a broken object must not abort the scan
-            LOGGER.warning("extraction failed for %s: %s", sha[:12], exc)
-            continue
-        decision = prefilter_commit(
-            commit.changed_paths, commit.patch, max_diff_bytes=settings.max_diff_bytes
+    with reporter.stage("prefilter", total=len(shas)) as prefilter_stage:
+        for sha in shas:
+            try:
+                commit = repository.get_commit(sha)
+            except Exception as exc:  # a broken object must not abort the scan
+                LOGGER.warning("extraction failed for %s: %s", sha[:12], exc)
+            else:
+                decision = prefilter_commit(
+                    commit.changed_paths, commit.patch, max_diff_bytes=settings.max_diff_bytes
+                )
+                prefilter.record(decision)
+                if decision.admit:
+                    admitted.append(commit)
+            # Counted even when extraction failed: a counter that silently stops
+            # short of its total reads as a stall rather than as a skipped object.
+            prefilter_stage.advance()
+        prefilter_stage.finish(
+            f"admitted {prefilter.admitted}/{prefilter.seen} "
+            f"({prefilter.reduction_rate:.1%} rejected, $0)"
         )
-        prefilter.record(decision)
-        if decision.admit:
-            admitted.append(commit)
-    say(
-        f"prefilter admitted {prefilter.admitted}/{prefilter.seen} "
-        f"({prefilter.reduction_rate:.1%} rejected, $0)"
-    )
 
     outcome = ScanOutcome(context=None, prefilter=prefilter)  # type: ignore[arg-type]
     usage = TokenUsage()
+
+    # Both model stages run a bounded pool of long calls, so the useful progress
+    # detail is the same for each: what is in flight, how long the oldest has
+    # been running, and what has been spent against any ceiling.
+    in_flight = InFlight()
+
+    def model_stage_detail() -> dict[str, Any]:
+        detail = in_flight.snapshot()
+        detail["cost_usd"] = pricing.estimate(usage)
+        if settings.max_cost_usd is not None:
+            detail["cost_ceiling_usd"] = settings.max_cost_usd
+        return detail
 
     # --- stage 1: triage (cheap, recall-first) ---------------------------
     #
@@ -257,48 +291,56 @@ def scan_repository(
     by_sha = {commit.sha: commit for commit in admitted}
 
     def triage_one(commit: GitCommit) -> tuple[str, str | None, str | None, TokenUsage]:
-        try:
-            decision = runner.run_raw(
-                commit.patch.decode("utf-8", errors="replace"),
-                repository=repository.canonical_source,
-                commit_sha=commit.sha,
-                parent_sha=commit.parent_sha,
-                subject=commit.message.splitlines()[0] if commit.message else "",
-                message=commit.message,
-                profile=settings.triage_profile,
-            )
-        except LLMOversizeError:
-            return commit.sha, None, "oversize", TokenUsage()
-        except Exception as exc:
-            return commit.sha, None, type(exc).__name__, TokenUsage()
+        with in_flight.track(commit.sha):
+            try:
+                decision = runner.run_raw(
+                    commit.patch.decode("utf-8", errors="replace"),
+                    repository=repository.canonical_source,
+                    commit_sha=commit.sha,
+                    parent_sha=commit.parent_sha,
+                    subject=commit.message.splitlines()[0] if commit.message else "",
+                    message=commit.message,
+                    profile=settings.triage_profile,
+                )
+            except LLMOversizeError:
+                return commit.sha, None, "oversize", TokenUsage()
+            except Exception as exc:
+                return commit.sha, None, type(exc).__name__, TokenUsage()
         verdict = decision.verdict.value if decision.verdict else None
         error = (
             None if verdict else (decision.error.kind.value if decision.error else "unknown")
         )
         return commit.sha, verdict, error, _usage_of(decision)
 
-    with ThreadPoolExecutor(max_workers=settings.workers) as pool:
-        for future in as_completed(pool.submit(triage_one, c) for c in admitted):
-            sha, verdict, error, call_usage = future.result()
-            usage = usage + call_usage
-            if verdict == "YES":
-                outcome.triage_yes.append(sha)
-            elif verdict == "NO":
-                outcome.triage_no.append(sha)
-            else:
-                outcome.triage_errors.append((sha, error or "unknown"))
-    say(
-        f"triage: {len(outcome.triage_yes)} candidates, "
-        f"{len(outcome.triage_no)} rejected, {len(outcome.triage_errors)} errors "
-        f"(${pricing.estimate(usage):.2f})"
-    )
+    with reporter.stage(
+        "triage", total=len(admitted), detail=model_stage_detail
+    ) as triage_stage:
+        with ThreadPoolExecutor(max_workers=settings.workers) as pool:
+            for future in as_completed(pool.submit(triage_one, c) for c in admitted):
+                sha, verdict, error, call_usage = future.result()
+                usage = usage + call_usage
+                if verdict == "YES":
+                    outcome.triage_yes.append(sha)
+                elif verdict == "NO":
+                    outcome.triage_no.append(sha)
+                else:
+                    outcome.triage_errors.append((sha, error or "unknown"))
+                triage_stage.advance()
+        triage_stage.finish(
+            f"{len(outcome.triage_yes)} candidates, "
+            f"{len(outcome.triage_no)} rejected, {len(outcome.triage_errors)} errors "
+            f"(${pricing.estimate(usage):.2f})"
+        )
 
     # --- stage 2: adjudication (expensive, precision-first) --------------
     candidates = sorted(outcome.triage_yes)
     if settings.max_candidates is not None:
         dropped = max(0, len(candidates) - settings.max_candidates)
         if dropped:
-            say(f"NOTE: capping adjudication at {settings.max_candidates}; {dropped} dropped")
+            say(
+                f"NOTE: capping adjudication at {settings.max_candidates}; {dropped} dropped",
+                stage="adjudicate",
+            )
         candidates = candidates[: settings.max_candidates]
 
     if settings.adjudicator == "codex":
@@ -314,87 +356,104 @@ def scan_repository(
         adjudicator = Adjudicator(client, repository, profile=settings.profile)
 
     def adjudicate_one(sha: str) -> tuple[str, Any]:
-        commit = by_sha[sha]
-        return sha, adjudicator.adjudicate(_candidate_from(commit, repository.canonical_source))
+        with in_flight.track(sha):
+            commit = by_sha[sha]
+            candidate = _candidate_from(commit, repository.canonical_source)
+            return sha, adjudicator.adjudicate(candidate)
 
-    with ThreadPoolExecutor(max_workers=settings.workers) as pool:
-        # Keep the future->sha map so a raised adjudication can still be attributed
-        # to its commit: future.result() re-raises before returning the (sha, result)
-        # tuple, so the SHA is otherwise lost.
-        future_to_sha = {pool.submit(adjudicate_one, sha): sha for sha in candidates}
-        futures = list(future_to_sha)
-        for future in as_completed(futures):
-            failed_sha = future_to_sha[future]
-            try:
-                sha, result = future.result()
-            except Exception as exc:
-                # Previously swallowed by a bare warning. Retain the SHA and full
-                # traceback so the debug report can show exactly what blew up.
-                tb = traceback.format_exc()
-                LOGGER.warning("adjudication failed for %s: %s", failed_sha[:12], exc)
-                outcome.adjudication_errors.append((failed_sha, tb))
-                commit = by_sha.get(failed_sha)
+    # No ETA: per-candidate cost spans an order of magnitude (mean ~25s against a
+    # 240s ceiling, and codex is several times that), so a linear projection would
+    # manufacture a finish time it cannot support. The in-flight count and the age
+    # of the oldest candidate answer the question actually being asked here --
+    # whether anything is wedged -- and they answer it against a known ceiling.
+    with reporter.stage(
+        "adjudicate", total=len(candidates), detail=model_stage_detail, eta=False
+    ) as adjudicate_stage:
+        with ThreadPoolExecutor(max_workers=settings.workers) as pool:
+            # Keep the future->sha map so a raised adjudication can still be attributed
+            # to its commit: future.result() re-raises before returning the (sha, result)
+            # tuple, so the SHA is otherwise lost.
+            future_to_sha = {pool.submit(adjudicate_one, sha): sha for sha in candidates}
+            futures = list(future_to_sha)
+            for future in as_completed(futures):
+                # Counted here rather than per verdict: the future has completed
+                # either way, and the error path below returns early.
+                adjudicate_stage.advance()
+                failed_sha = future_to_sha[future]
+                try:
+                    sha, result = future.result()
+                except Exception as exc:
+                    # Previously swallowed by a bare warning. Retain the SHA and full
+                    # traceback so the debug report can show exactly what blew up.
+                    tb = traceback.format_exc()
+                    LOGGER.warning("adjudication failed for %s: %s", failed_sha[:12], exc)
+                    outcome.adjudication_errors.append((failed_sha, tb))
+                    commit = by_sha.get(failed_sha)
+                    outcome.adjudication_records.append(
+                        {
+                            "sha": failed_sha,
+                            "subject": (commit.message.splitlines() or [""])[0]
+                            if commit
+                            else "",
+                            "verdict": "ERROR",
+                            "reason": f"{type(exc).__name__}: {exc}",
+                            "validation_errors": [],
+                            "raw_output": None,
+                        }
+                    )
+                    continue
+                usage = usage + result.usage
+                commit = by_sha[sha]
+                subject = (commit.message.splitlines() or [""])[0]
+                if result.verdict == "YES":
+                    finding = dict(result.decision)
+                    finding.update(
+                        {
+                            "commit_sha": sha,
+                            "commit_date": commit.committer_time,
+                            "commit_subject": subject,
+                        }
+                    )
+                    outcome.adjudication_yes.append(finding)
+                elif result.verdict == "NO":
+                    outcome.adjudication_no.append(sha)
+                else:
+                    reason = str(result.decision.get("abstain_reason") or "unspecified")
+                    outcome.adjudication_abstain.append((sha, reason))
+                # One debug record per adjudicated commit, capturing what the counts drop:
+                # the verdict, the raw reason string (garbled ones included, verbatim), any
+                # validation errors, and the raw model text when the backend exposes it.
                 outcome.adjudication_records.append(
                     {
-                        "sha": failed_sha,
-                        "subject": (commit.message.splitlines() or [""])[0] if commit else "",
-                        "verdict": "ERROR",
-                        "reason": f"{type(exc).__name__}: {exc}",
-                        "validation_errors": [],
-                        "raw_output": None,
+                        "sha": sha,
+                        "subject": subject,
+                        "verdict": result.verdict,
+                        "reason": str(result.decision.get("abstain_reason") or "")
+                        if result.verdict == "ABSTAIN"
+                        else "",
+                        "validation_errors": list(
+                            getattr(result, "validation_errors", ()) or ()
+                        ),
+                        "raw_output": getattr(result, "raw_output", None),
                     }
                 )
-                continue
-            usage = usage + result.usage
-            commit = by_sha[sha]
-            subject = (commit.message.splitlines() or [""])[0]
-            if result.verdict == "YES":
-                finding = dict(result.decision)
-                finding.update(
-                    {
-                        "commit_sha": sha,
-                        "commit_date": commit.committer_time,
-                        "commit_subject": subject,
-                    }
-                )
-                outcome.adjudication_yes.append(finding)
-            elif result.verdict == "NO":
-                outcome.adjudication_no.append(sha)
-            else:
-                reason = str(result.decision.get("abstain_reason") or "unspecified")
-                outcome.adjudication_abstain.append((sha, reason))
-            # One debug record per adjudicated commit, capturing what the counts drop:
-            # the verdict, the raw reason string (garbled ones included, verbatim), any
-            # validation errors, and the raw model text when the backend exposes it.
-            outcome.adjudication_records.append(
-                {
-                    "sha": sha,
-                    "subject": subject,
-                    "verdict": result.verdict,
-                    "reason": str(result.decision.get("abstain_reason") or "")
-                    if result.verdict == "ABSTAIN"
-                    else "",
-                    "validation_errors": list(getattr(result, "validation_errors", ()) or ()),
-                    "raw_output": getattr(result, "raw_output", None),
-                }
-            )
-            if (
-                settings.max_cost_usd is not None
-                and pricing.estimate(usage) >= settings.max_cost_usd
-            ):
-                say("cost ceiling reached; stopping adjudication")
-                for pending in futures:
-                    pending.cancel()
-                break
+                if (
+                    settings.max_cost_usd is not None
+                    and pricing.estimate(usage) >= settings.max_cost_usd
+                ):
+                    say("cost ceiling reached; stopping adjudication", stage="adjudicate")
+                    for pending in futures:
+                        pending.cancel()
+                    break
 
-    outcome.usage = usage
-    outcome.cost_usd = pricing.estimate(usage)
-    outcome.wall_clock_s = time.monotonic() - started
-    say(
-        f"adjudication: {len(outcome.adjudication_yes)} findings, "
-        f"{len(outcome.adjudication_no)} rejected, "
-        f"{len(outcome.adjudication_abstain)} abstained (${outcome.cost_usd:.2f})"
-    )
+        outcome.usage = usage
+        outcome.cost_usd = pricing.estimate(usage)
+        outcome.wall_clock_s = time.monotonic() - started
+        adjudicate_stage.finish(
+            f"{len(outcome.adjudication_yes)} findings, "
+            f"{len(outcome.adjudication_no)} rejected, "
+            f"{len(outcome.adjudication_abstain)} abstained (${outcome.cost_usd:.2f})"
+        )
 
     # --- attribution and de-duplication -----------------------------------
     #
@@ -408,7 +467,8 @@ def scan_repository(
     if moves or duplicates:
         say(
             f"attribution: {len(moves)} finding(s) re-pointed past a merge, "
-            f"{len(duplicates)} duplicate(s) collapsed"
+            f"{len(duplicates)} duplicate(s) collapsed",
+            stage="compile",
         )
 
     # Introduced-to-fixed span: blame the pre-fix lines each fix touched and
@@ -419,9 +479,17 @@ def scan_repository(
         findings = attribute_introductions(outcome.adjudication_yes, repository)
         outcome.adjudication_yes = findings
         attributed = sum(1 for f in findings if f.get("introduced_to_fixed_days") is not None)
-        say(f"introductions: {attributed}/{len(findings)} finding(s) got a span")
+        say(
+            f"introductions: {attributed}/{len(findings)} finding(s) got a span",
+            stage="compile",
+        )
 
     # --- compile ----------------------------------------------------------
+    #
+    # Announced before the fact because the narrative is one more model call:
+    # without this line the run's last output is the adjudication summary, and
+    # the wait that follows looks like a hang rather than the tail of the scan.
+    say("compiling security context", stage="compile")
     stats = ScanStats(
         commits_scanned=prefilter.seen,
         commits_triaged=len(admitted),
@@ -460,6 +528,10 @@ def scan_repository(
         now=datetime.now(UTC),
     )
     outcome.context = write_narrative(context, client=client)
+    say(
+        f"done · {len(outcome.adjudication_yes)} finding(s) · "
+        f"${outcome.cost_usd:.2f} · {outcome.wall_clock_s:.1f}s"
+    )
     return outcome
 
 
