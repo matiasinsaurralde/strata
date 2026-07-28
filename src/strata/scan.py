@@ -234,23 +234,38 @@ def scan_repository(
         git_stage.finish(f"enumerated {len(shas)} commits")
 
     # --- stage 0: deterministic prefilter (free) -------------------------
+    #
+    # Extraction is the dominant cost of this stage, and per-commit ``get_commit``
+    # spends five to six Git subprocesses each -- most of them fetching a patch the
+    # prefilter is about to reject. A single streaming ``git log -p`` pass yields the
+    # same fully-hydrated commits in one process instead, turning a many-minute walk
+    # over a large history into seconds. Patch-ids are deliberately not computed here:
+    # the prefilter never reads them, and attribution derives them later for just the
+    # handful of admitted commits.
     prefilter = PrefilterStats()
     admitted: list[GitCommit] = []
     with reporter.stage("prefilter", total=len(shas)) as prefilter_stage:
-        for sha in shas:
+        stream = repository.stream_commits(
+            last=settings.last, revision=settings.revision, compute_patch_id=False
+        )
+        while True:
             try:
-                commit = repository.get_commit(sha)
+                commit = next(stream)
+            except StopIteration:
+                break
             except Exception as exc:  # a broken object must not abort the scan
-                LOGGER.warning("extraction failed for %s: %s", sha[:12], exc)
-            else:
-                decision = prefilter_commit(
-                    commit.changed_paths, commit.patch, max_diff_bytes=settings.max_diff_bytes
-                )
-                prefilter.record(decision)
-                if decision.admit:
-                    admitted.append(commit)
-            # Counted even when extraction failed: a counter that silently stops
-            # short of its total reads as a stall rather than as a skipped object.
+                # A per-commit extraction fault is logged and skipped, as with the
+                # per-``get_commit`` path; the counter still advances so the bar does
+                # not read as stalled short of its total.
+                LOGGER.warning("streamed extraction failed: %s", exc)
+                prefilter_stage.advance()
+                continue
+            decision = prefilter_commit(
+                commit.changed_paths, commit.patch, max_diff_bytes=settings.max_diff_bytes
+            )
+            prefilter.record(decision)
+            if decision.admit:
+                admitted.append(commit)
             prefilter_stage.advance()
         prefilter_stage.finish(
             f"admitted {prefilter.admitted}/{prefilter.seen} "

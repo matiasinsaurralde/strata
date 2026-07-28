@@ -165,6 +165,22 @@ def prefilter_commit(
             diff_bytes=size,
         )
 
+    # Size is checked before classification: an oversize commit is rejected
+    # regardless of kind, so classifying it first is wasted -- and on a
+    # multi-megabyte patch ``classify_change_kind``'s per-file ``re.M`` scans of
+    # the whole text are pathologically slow, which is exactly the input a
+    # streaming walk (no per-commit patch cap) can hand this. Reject on size
+    # first and never run the classifier over an outsized diff.
+    if max_diff_bytes is not None and size > max_diff_bytes:
+        return PrefilterDecision(
+            admit=False,
+            reason=PrefilterReason.OVERSIZE,
+            kinds=(),
+            first_party_paths=(),
+            touches_tests=False,
+            diff_bytes=size,
+        )
+
     kinds = [classify_change_kind(path, text) for path in paths]
     first_party = tuple(
         path
@@ -173,16 +189,6 @@ def prefilter_commit(
     )
     touches_tests = ChangeKind.TEST in kinds
     kind_names = tuple(dict.fromkeys(kind.value for kind in kinds))
-
-    if max_diff_bytes is not None and size > max_diff_bytes:
-        return PrefilterDecision(
-            admit=False,
-            reason=PrefilterReason.OVERSIZE,
-            kinds=kind_names,
-            first_party_paths=first_party,
-            touches_tests=touches_tests,
-            diff_bytes=size,
-        )
 
     if first_party:
         return PrefilterDecision(

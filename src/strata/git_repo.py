@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
@@ -172,6 +173,100 @@ def _contains_control(value: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in value)
 
 
+def _unquote_git_path(path: str) -> str:
+    """Decode a Git path that may be C-quoted (paths with spaces are *not*
+    quoted, but ones with control/non-ASCII bytes are, e.g. ``"a/\\316\\261"``)."""
+    if len(path) < 2 or path[0] != '"' or path[-1] != '"':
+        return path
+    try:
+        # Undo the C-string escaping to raw bytes, then read them back as UTF-8.
+        raw = path[1:-1].encode("latin-1").decode("unicode_escape").encode("latin-1")
+        return raw.decode("utf-8", errors="replace")
+    except UnicodeDecodeError, UnicodeEncodeError:
+        return path[1:-1]
+
+
+def _strip_ab_prefix(path: str) -> str:
+    path = _unquote_git_path(path)
+    if path == "/dev/null":
+        return path
+    if path.startswith(("a/", "b/")):
+        return path[2:]
+    return path
+
+
+def _changed_paths_from_patch(patch_text: str) -> tuple[ChangedPath, ...]:
+    """Derive ``ChangedPath`` records from a unified-diff body.
+
+    ``git diff --name-status`` is authoritative, but re-deriving the same
+    (status, path) tuples from the patch headers we already have in the
+    streaming reader avoids a second Git process per commit. The status is
+    read from the file-mode/rename headers each section carries:
+
+    * ``new file mode``     -> ``A``
+    * ``deleted file mode`` -> ``D``
+    * ``rename from/to``    -> ``R100`` (a rename with no content delta; the
+      streaming reader never asks Git to score the similarity, so the exact
+      percentage is not recovered -- only the fact of a rename)
+    * anything else         -> ``M``
+
+    Paths come from the unambiguous ``rename from/to`` and ``--- ``/``+++ ``
+    lines in preference to the ``diff --git a/… b/…`` header, because that
+    header is space-separated and Git does not quote a space in it, so a path
+    containing a space cannot be recovered from it reliably. The chosen name is
+    the post-image (``b/`` side), falling back to the pre-image for a deletion,
+    matching :meth:`changed_paths`' choice of the surviving name.
+    """
+    from .diffing import split_file_diffs
+
+    _, sections = split_file_diffs(patch_text)
+    records: list[ChangedPath] = []
+    for section in sections:
+        lines = section.splitlines()
+        header = lines[0] if lines else ""
+        # The diff --git header is a last-resort source of the paths; the
+        # per-file lines below override it because they survive spaces/quoting.
+        header_old = header_new = None
+        parts = header.split(" ", 3)
+        if len(parts) == 4 and parts[:2] == ["diff", "--git"]:
+            header_old = _strip_ab_prefix(parts[2])
+            header_new = _strip_ab_prefix(parts[3])
+
+        status = "M"
+        rename_old = rename_new = minus = plus = None
+        for line in lines[1:]:
+            if line.startswith("new file mode"):
+                status = "A"
+            elif line.startswith("deleted file mode"):
+                status = "D"
+            elif line.startswith("rename from "):
+                status = "R100"
+                rename_old = _unquote_git_path(line.removeprefix("rename from "))
+            elif line.startswith("rename to "):
+                status = "R100"
+                rename_new = _unquote_git_path(line.removeprefix("rename to "))
+            elif line.startswith("--- "):
+                minus = _strip_ab_prefix(line[4:].split("\t", 1)[0])
+            elif line.startswith("+++ "):
+                plus = _strip_ab_prefix(line[4:].split("\t", 1)[0])
+
+        def pick(*candidates: str | None) -> str:
+            for value in candidates:
+                if value and value != "/dev/null":
+                    return value
+            return "<unknown>"
+
+        if status.startswith("R"):
+            old_path = pick(rename_old, minus, header_old)
+            path = pick(rename_new, plus, header_new, old_path)
+            records.append(ChangedPath(status=status, path=path, old_path=old_path))
+        elif status == "D":
+            records.append(ChangedPath(status=status, path=pick(minus, header_old, plus)))
+        else:
+            records.append(ChangedPath(status=status, path=pick(plus, header_new, minus)))
+    return tuple(records)
+
+
 def _normalise_source(source: str | os.PathLike[str]) -> tuple[str, str, bool]:
     raw = os.fspath(source).strip()
     if not raw or "\x00" in raw or _contains_control(raw):
@@ -271,6 +366,90 @@ def _scrubbed_environment() -> dict[str, str]:
         }
     )
     return env
+
+
+def _stream_bounded(
+    args: list[str],
+    *,
+    timeout: float,
+    chunk_size: int = 1024 * 1024,
+    allowed_returncodes: tuple[int, ...] = (0,),
+) -> Iterable[bytes]:
+    """Yield a Git command's stdout in bounded chunks under a wall-clock timeout.
+
+    Unlike :func:`_run_bounded`, which materialises the whole output before
+    returning under a fixed total-output ceiling, this reads stdout incrementally
+    so a caller parsing a very long ``git log -p`` stream can process and discard
+    each record as it arrives. It therefore deliberately does *not* cap the total
+    number of bytes -- a full-history patch stream is legitimately large -- and
+    relies on the consumer to bound the memory held for any single record. The
+    wall-clock timeout and the returncode/stderr checks are preserved; a
+    violation raises the same exception types as :func:`_run_bounded`.
+    """
+    if not args or any(not isinstance(arg, str) or "\x00" in arg for arg in args):
+        raise ValueError("subprocess arguments must be non-NUL strings")
+    if timeout <= 0 or chunk_size <= 0:
+        raise ValueError("timeout and chunk_size must be positive")
+
+    deadline = time.monotonic() + timeout
+    process = subprocess.Popen(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_scrubbed_environment(),
+        close_fds=True,
+    )
+    stderr_chunks: list[bytes] = []
+    stderr_limit = 64 * 1024
+
+    def drain_stderr() -> None:
+        size = 0
+        assert process.stderr is not None
+        try:
+            while chunk := process.stderr.read(64 * 1024):
+                remaining = stderr_limit - size
+                if remaining > 0:
+                    stderr_chunks.append(chunk[:remaining])
+                    size += min(len(chunk), remaining)
+        finally:
+            process.stderr.close()
+
+    assert process.stdout is not None and process.stderr is not None
+    stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_reader.start()
+
+    timed_out = False
+    try:
+        while True:
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
+            chunk = process.stdout.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        process.stdout.close()
+        if timed_out:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            timed_out = True
+        stderr_reader.join()
+
+    if timed_out:
+        raise GitTimeoutError(f"Git command exceeded {timeout:g}s")
+    if process.returncode not in allowed_returncodes:
+        raise GitCommandError(
+            args,
+            process.returncode or -1,
+            b"".join(stderr_chunks).decode("utf-8", errors="replace"),
+        )
 
 
 def _run_bounded(
@@ -738,6 +917,245 @@ class GitRepository:
                 revision=revision,
             )
         ]
+
+    # Streaming reader --------------------------------------------------------
+    #
+    # A NUL byte cannot appear in Git's text diff output nor in a commit message,
+    # so a sentinel beginning with NUL delimits records unambiguously without any
+    # risk of colliding with patch or message content. Each record is
+    #   \0STRATA\x01 <9 NUL-separated metadata fields> \0STRATAEOM\x01 <patch>
+    # and the patch body is left byte-for-byte as ``git log -p`` emits it.
+    _STREAM_REC = b"\x00STRATA\x01"
+    _STREAM_EOM = b"\x00STRATAEOM\x01"
+    _STREAM_FORMAT = (
+        "%x00STRATA%x01%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B"
+        "%x00STRATAEOM%x01"
+    )
+
+    def stream_commits(
+        self,
+        *,
+        last: int | None = None,
+        since: str | None = None,
+        revision: str | None = None,
+        compute_patch_id: bool = False,
+    ) -> Iterable[GitCommit]:
+        """Yield fully-hydrated commits from a single streaming ``git log`` pass.
+
+        This is the batched counterpart to calling :meth:`get_commit` in a loop.
+        One ``git log -p`` process walks the whole range and its stdout is parsed
+        incrementally, so a scan pays one subprocess for the entire history
+        instead of the five or six per commit that the per-``get_commit`` path
+        spawns -- and each rejected commit's patch is freed as soon as it is
+        yielded rather than accumulating. The order, the range semantics
+        (``last``/``since``/``revision``), and the per-commit patch bytes match
+        :meth:`enumerate_commits`; merges are diffed against their first parent,
+        exactly as :meth:`get_commit` does via ``parent_sha``.
+
+        Args:
+            last: Cap on commits, newest first. ``None`` walks the full branch.
+            since: Only commits at or after this Git-parseable date.
+            revision: Start ref; defaults to the repository's default branch.
+            compute_patch_id: Also fill :attr:`GitCommit.patch_id`. Off by
+                default because it costs one ``git patch-id`` process per commit
+                -- the prefilter never needs it, and it is only consumed by
+                finding de-duplication over the handful of admitted commits.
+
+        Yields:
+            :class:`GitCommit` in newest-first topological order.
+        """
+        if last is not None and (last <= 0 or last > HARD_MAX_COMMITS):
+            raise ValueError(f"last must be between 1 and {HARD_MAX_COMMITS}")
+        if since is not None and (
+            not since or len(since) > 128 or _contains_control(since) or since.startswith("-")
+        ):
+            raise ValueError("invalid --since value")
+        target = self.resolve_revision(revision or self.default_branch())
+
+        arguments = [
+            "log",
+            "--topo-order",
+            "--date-order",
+            "--no-show-signature",
+            "--patch",
+            "--diff-merges=first-parent",
+            "--find-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--binary",
+            "--full-index",
+            f"--format={self._STREAM_FORMAT}",
+        ]
+        if last is not None:
+            arguments.append(f"--max-count={last}")
+        if since is not None:
+            arguments.append(f"--since={since}")
+        arguments.extend([target, "--"])
+
+        # ``git log`` streams the whole history's diffs, which is legitimately
+        # large; memory is bounded per record instead of over the total, so the
+        # buffer never holds more than a single commit's patch plus its header.
+        stream = _stream_bounded(self._base_git() + arguments, timeout=self.fetch_timeout)
+        yield from self._parse_commit_stream(stream, compute_patch_id=compute_patch_id)
+
+    def _parse_commit_stream(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        compute_patch_id: bool,
+    ) -> Iterable[GitCommit]:
+        # Memory is bounded per record rather than over the whole stream. A single
+        # commit whose patch exceeds the budget is capped: once the retained head
+        # reaches the cap the rest of that record is discarded as it streams by
+        # (O(n), no repeated whole-buffer copies), then the head is yielded with its
+        # patch truncated rather than aborting the walk. This mirrors get_commit,
+        # where one oversize commit fails alone and the scan skips it; here the
+        # truncated patch simply trips the prefilter's own OVERSIZE gate. The cap
+        # sits just above max_patch_bytes -- the same per-commit patch ceiling
+        # get_commit enforces -- with a small allowance for the record's metadata
+        # header and sentinels, so a commit at the patch limit is never truncated.
+        record_cap = self.max_patch_bytes + 64 * 1024
+        sep = self._STREAM_REC
+        keep = len(sep) - 1
+        buffer = b""
+        started = False
+        # When set, we are discarding the tail of an oversize record; ``held`` is
+        # its already-capped head, emitted once the next record boundary is found.
+        discarding = False
+        held: bytes | None = None
+
+        def finalize(record: bytes, was_overflow: bool) -> GitCommit | None:
+            return self._commit_from_record(
+                record, compute_patch_id=compute_patch_id, truncated=was_overflow
+            )
+
+        for chunk in chunks:
+            buffer += chunk
+            while True:
+                if discarding:
+                    # Drop everything up to and including the next sentinel; retain
+                    # only a short tail between iterations so a split sentinel is
+                    # still matched, without the buffer ever growing.
+                    index = buffer.find(sep)
+                    if index == -1:
+                        if len(buffer) > keep:
+                            buffer = buffer[-keep:]
+                        break
+                    buffer = buffer[index + len(sep) :]
+                    discarding = False
+                    started = True
+                    if held is not None:
+                        commit = finalize(held, True)
+                        held = None
+                        if commit is not None:
+                            yield commit
+                    continue
+                if not started:
+                    index = buffer.find(sep)
+                    if index == -1:
+                        if len(buffer) > keep:
+                            buffer = buffer[-keep:]
+                        break
+                    buffer = buffer[index + len(sep) :]
+                    started = True
+                nxt = buffer.find(sep)
+                if nxt == -1:
+                    if len(buffer) > record_cap:
+                        # Record still open and already over budget: cap the head
+                        # and discard the rest of it until the next sentinel.
+                        held = buffer[:record_cap]
+                        buffer = buffer[record_cap:]
+                        discarding = True
+                        started = False
+                        continue
+                    break
+                if nxt > record_cap:
+                    # A complete but oversize record (its whole body plus the next
+                    # sentinel arrived together): keep the budgeted head, drop the
+                    # overflow, and emit it truncated. The next record's sentinel is
+                    # consumed here, so we stay ``started`` at its content.
+                    record = buffer[:record_cap]
+                    buffer = buffer[nxt + len(sep) :]
+                    commit = finalize(record, True)
+                    if commit is not None:
+                        yield commit
+                    continue
+                record, buffer = buffer[:nxt], buffer[nxt + len(sep) :]
+                commit = finalize(record, False)
+                if commit is not None:
+                    yield commit
+        # Flush the final record: either an oversize head whose stream ended before
+        # another sentinel, or an ordinary trailing record.
+        if held is not None:
+            commit = finalize(held, True)
+            if commit is not None:
+                yield commit
+        elif started and buffer:
+            commit = finalize(buffer, False)
+            if commit is not None:
+                yield commit
+
+    def _commit_from_record(
+        self,
+        record: bytes,
+        *,
+        compute_patch_id: bool,
+        truncated: bool = False,
+    ) -> GitCommit | None:
+        header, sep, patch = record.partition(self._STREAM_EOM)
+        if not sep:
+            raise GitRepositoryError("malformed commit record in stream")
+        fields = header.decode("utf-8", errors="replace").split("\x00", 8)
+        if len(fields) != 9 or not _FULL_SHA_RE.fullmatch(fields[0]):
+            raise GitRepositoryError("malformed commit metadata in stream")
+        parents = tuple(parent.lower() for parent in fields[1].split() if parent)
+        if any(not _FULL_SHA_RE.fullmatch(parent) for parent in parents):
+            raise GitRepositoryError("malformed commit parents in stream")
+        # After the message-end sentinel ``git log`` writes a newline that ends
+        # the --format line, and then -- only when a diff follows -- a blank line
+        # before the patch. Strip both so the retained patch is byte-identical to
+        # ``git diff``/``get_commit`` output, which carries neither. The diff's
+        # own trailing newline already matches, so nothing is trimmed from the end
+        # (an empty-diff commit collapses to b"", exactly as ``git diff`` yields).
+        if patch.startswith(b"\n"):
+            patch = patch[1:]
+        if patch.startswith(b"\n"):
+            patch = patch[1:]
+        # An oversize commit was capped in the parser: its retained patch is a
+        # prefix, so patch-id (which needs the whole diff) is meaningless and is
+        # skipped. The truncated body is still enough to trip the prefilter's
+        # size gate, which is the only decision this feeds.
+        if truncated:
+            patch_text = patch.decode("utf-8", errors="replace")
+            return GitCommit(
+                sha=fields[0].lower(),
+                parents=parents,
+                message=fields[8].rstrip("\n"),
+                author_name=fields[2],
+                author_email=fields[3],
+                author_time=fields[4],
+                committer_name=fields[5],
+                committer_email=fields[6],
+                committer_time=fields[7],
+                changed_paths=_changed_paths_from_patch(patch_text),
+                patch=patch,
+                patch_id=None,
+            )
+        patch_text = patch.decode("utf-8", errors="replace")
+        return GitCommit(
+            sha=fields[0].lower(),
+            parents=parents,
+            author_name=fields[2],
+            author_email=fields[3],
+            author_time=fields[4],
+            committer_name=fields[5],
+            committer_email=fields[6],
+            committer_time=fields[7],
+            message=fields[8].rstrip("\n"),
+            changed_paths=_changed_paths_from_patch(patch_text),
+            patch=patch,
+            patch_id=self.compute_patch_id(patch) if compute_patch_id else None,
+        )
 
     def _metadata(self, sha: str) -> GitCommit:
         output = self._git(
