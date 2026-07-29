@@ -713,6 +713,110 @@ class TextBaselineAnalyzer:
         )
 
 
+class TreeSitterSymbolAnalyzer:
+    """The parser-backed counterpart to :class:`TextBaselineAnalyzer`.
+
+    Same output shape (``hunk_symbols``) so the ablation harness can put the
+    two arms side by side, but the enclosing symbol for each hunk comes from a
+    real parse tree rather than the regex stack. A hunk in a language the pack
+    does not cover -- or one whose parse the resolver declines -- falls back to
+    the text baseline, so this arm is never *worse* than ``text_baseline``, only
+    the same or better. The per-hunk ``resolver`` field records which path ran.
+    """
+
+    name = "tree_sitter_symbols"
+
+    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._monotonic = monotonic
+
+    def probe(self) -> Availability:
+        from . import tree_sitter_symbols as ts
+
+        if ts.available():
+            return Availability(
+                tool=self.name,
+                available=True,
+                reason="tree-sitter-language-pack is importable",
+                module="tree_sitter_language_pack",
+            )
+        return Availability(
+            tool=self.name,
+            available=False,
+            reason="tree-sitter-language-pack is not importable",
+        )
+
+    def analyze(
+        self,
+        request: AnalysisRequest | str,
+        *,
+        before_files: Mapping[str, str] | None = None,
+        after_files: Mapping[str, str] | None = None,
+    ) -> AnalysisResult:
+        from . import tree_sitter_symbols as ts
+
+        request = AnalysisRequest.coerce(
+            request, before_files=before_files, after_files=after_files
+        )
+        availability = self.probe()
+        started = self._monotonic()
+        hunks = parse_unified_diff(request.diff)
+        _, filtering = filter_comment_whitespace_hunks(hunks)
+        before = request.before_files or {}
+        after = request.after_files or {}
+        symbols: list[dict[str, Any]] = []
+        parsed = 0
+        for index, hunk in enumerate(hunks):
+            source = after.get(hunk.path)
+            line = hunk.new_start
+            revision = "after"
+            if source is None:
+                source = before.get(hunk.path, "")
+                line = hunk.old_start
+                revision = "before"
+            anchor = ts.enclosing_symbol(source, line, path=hunk.path) if source else None
+            resolver = "tree_sitter"
+            if anchor is None:
+                anchor = hunk_to_symbol(source or "", line, path=hunk.path)
+                resolver = "text_fallback"
+            else:
+                parsed += 1
+            symbols.append(
+                {
+                    "hunk_index": index,
+                    "path": hunk.path,
+                    "old_start": hunk.old_start,
+                    "new_start": hunk.new_start,
+                    "revision": revision,
+                    "resolver": resolver,
+                    "symbol": anchor.to_dict(),
+                    "cosmetic_only": hunk_is_comment_or_whitespace_only(hunk),
+                }
+            )
+        elapsed_ms = (self._monotonic() - started) * 1000.0
+        status = "ok" if availability.available else "degraded_text_fallback"
+        return AnalysisResult(
+            analyzer=self.name,
+            availability=availability,
+            status=status,
+            findings={
+                "hunk_symbols": symbols,
+                "cosmetic_only": bool(hunks) and all(s["cosmetic_only"] for s in symbols),
+            },
+            metrics={
+                "elapsed_ms": round(elapsed_ms, 3),
+                "input_bytes": len(request.diff.encode("utf-8")),
+                "hunk_count": len(hunks),
+                **filtering,
+                "symbol_count": len(symbols),
+                "parsed_hunks": parsed,
+                "fallback_hunks": len(symbols) - parsed,
+                "result_count": len(symbols),
+                "external_processes": 0,
+                "estimated_cost_usd": 0.0,
+            },
+        )
+
+
 OptionalRunner = Callable[[AnalysisRequest, Availability], Mapping[str, Any]]
 
 
@@ -858,6 +962,7 @@ class JoernAnalyzer(OptionalToolAnalyzer):
 def default_analyzers() -> tuple[Analyzer, ...]:
     return (
         TextBaselineAnalyzer(),
+        TreeSitterSymbolAnalyzer(),
         TreeSitterAnalyzer(),
         AstGrepAnalyzer(),
         CodeQLAnalyzer(),
@@ -986,6 +1091,7 @@ __all__ = [
     "TextAnalyzer",
     "TextBaselineAnalyzer",
     "TreeSitterAnalyzer",
+    "TreeSitterSymbolAnalyzer",
     "availability_report",
     "default_analyzers",
     "filter_comment_whitespace_hunks",
