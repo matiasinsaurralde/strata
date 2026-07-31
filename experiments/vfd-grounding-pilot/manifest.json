@@ -1,0 +1,66 @@
+{
+  "positives": [
+    {"id": "pgx", "repo": "jackc/pgx", "sha": "6dbad4cafdb8a4daab7ff79c858c95da4b6109e8",
+     "ghsa": "GHSA-xgrm-4fwx-7qm8", "cve": "CVE-2026-33815",
+     "cwe_truth": ["CWE-1284", "CWE-20", "CWE-190"], "cwe_keywords": ["negative", "length", "bounds", "memory", "validation", "integer"],
+     "stratum": "quiet", "patch": "patches/pgx.patch", "pr": null,
+     "diff_leak": false, "note": "silent: subject says 'guard against negative parameter lengths', no security words"},
+
+    {"id": "go-tuf", "repo": "theupdateframework/go-tuf", "sha": "73345ab6b0eb7e59d525dac17a428f043074cef6",
+     "ghsa": "GHSA-846p-jg2w-w324", "cve": "CVE-2026-23991",
+     "cwe_truth": ["CWE-617", "CWE-754"], "cwe_keywords": ["panic", "assertion", "type", "nil", "dos", "denial", "crash"],
+     "stratum": "quiet", "patch": "patches/go-tuf.patch", "pr": "EMPTY",
+     "diff_leak": false, "note": "silent: subject 'Perform type assertion'; PR #710 has empty description"},
+
+    {"id": "aws-efs", "repo": "kubernetes-sigs/aws-efs-csi-driver", "sha": "51806c22c5754bfbdeca6910f15571a07921b784",
+     "ghsa": "GHSA-mph4-q2vm-w2pw", "cve": "CVE-2026-6437",
+     "cwe_truth": ["CWE-88", "CWE-77", "CWE-20"], "cwe_keywords": ["injection", "mount", "option", "argument", "validation", "sanitiz"],
+     "stratum": "quiet", "patch": "patches/aws-efs.patch", "pr": null,
+     "diff_leak": false, "note": "silent: subject 'Validate mountTargetIp'; underlying issue is mount-option injection"},
+
+    {"id": "sliver", "repo": "BishopFox/sliver", "sha": "818127349ccec812876693c4ca74ebf4350ec6b7",
+     "ghsa": "GHSA-2286-hxv5-cmp2", "cve": "CVE-2026-25760",
+     "cwe_truth": ["CWE-22"], "cwe_keywords": ["path", "traversal", "directory", "arbitrary file", "filepath"],
+     "stratum": "quiet", "patch": "patches/sliver.patch", "pr": null,
+     "diff_leak": false, "note": "MAXIMALLY silent: subject 'Use correct path construction'; path traversal fix by switching user Path to ID"},
+
+    {"id": "go-attestation", "repo": "google/go-attestation", "sha": "b6e905e7ae52937f02b5ca494dd1c6a3ac7a1003",
+     "ghsa": "GHSA-9r4w-jg96-92mv", "cve": "CVE-2026-12681",
+     "cwe_truth": ["CWE-20"], "cwe_keywords": ["injection", "bounds", "parsing", "validation", "input", "hash"],
+     "stratum": "announced", "patch": "patches/go-attestation.patch", "pr": "pr/go-attestation.txt",
+     "diff_leak": true, "note": "ANNOUNCED: commit body + diff comments describe attacker-controlled hash injection; PR #502 links GHSA"},
+
+    {"id": "istio", "repo": "istio/istio", "sha": "692e460c342d8f308a35b6ecbdace47807da8ade",
+     "ghsa": "GHSA-9gcg-w975-3rjh", "cve": "CVE-2026-39350",
+     "cwe_truth": ["CWE-185", "CWE-863", "CWE-697"], "cwe_keywords": ["regex", "regular expression", "escape", "quote", "metachar", "authorization", "bypass", "injection"],
+     "stratum": "announced_in_diff", "patch": "patches/istio.patch", "pr": "pr/istio.txt",
+     "diff_leak": true, "note": "commit subject neutral ('Quote metacharacters in SA regex') but diff adds release note 'area: security'"},
+
+    {"id": "kargo", "repo": "akuity/kargo", "sha": "23646eaefb449a6cc2e76a8033e8a57f71369772",
+     "ghsa": "GHSA-w5wv-wvrp-v5m5", "cve": "CVE-2026-24748",
+     "cwe_truth": ["CWE-863", "CWE-306", "CWE-287"], "cwe_keywords": ["auth", "authentication", "authorization", "token", "unauthenticated", "bypass", "verify"],
+     "stratum": "quiet", "patch": "patches/kargo.patch", "pr": null,
+     "diff_leak": false, "note": "silent: subject 'Merge commit from fork' (auto GHSA merge); rejects unverified bearer tokens"}
+  ],
+  "negatives": [
+    {"id": "neg-gotuf-sigstore-bump", "repo": "theupdateframework/go-tuf", "sha": "abd8cd2",
+     "label": "other", "kind": "dep_bump", "hardness": "hard",
+     "patch": "patches/neg-gotuf-sigstore-bump.patch", "pr": null,
+     "note": "dependabot bump of sigstore (a signing/crypto lib) - security-adjacent but not a fix"},
+
+    {"id": "neg-gotuf-mapscopy-refactor", "repo": "theupdateframework/go-tuf", "sha": "4b704cd",
+     "label": "other", "kind": "refactor", "hardness": "easy",
+     "patch": "patches/neg-gotuf-mapscopy-refactor.patch", "pr": null,
+     "note": "mechanical refactor copyMapValues -> maps.Copy in (de)serialization code"},
+
+    {"id": "neg-gotuf-logfix", "repo": "theupdateframework/go-tuf", "sha": "45e0a1f",
+     "label": "other", "kind": "cosmetic_in_security_code", "hardness": "hard",
+     "patch": "patches/neg-gotuf-logfix.patch", "pr": null,
+     "note": "one-line log-format fix INSIDE VerifyDelegate (signature verification) - looks security-relevant, is cosmetic"},
+
+    {"id": "neg-kargo-xnet-bump", "repo": "akuity/kargo", "sha": "1f4152347e",
+     "label": "other", "kind": "dep_bump", "hardness": "hard",
+     "patch": "patches/neg-kargo-xnet-bump.patch", "pr": null,
+     "note": "dependabot bump golang.org/x/net 0.54->0.55; x/net bumps ARE frequently CVE remediations -> archetypal FP driver"}
+  ]
+}

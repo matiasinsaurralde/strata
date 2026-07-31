@@ -1,0 +1,27 @@
+Summary
+-------
+
+`parseEfiSignatureList()` did not skip `SignatureHeaderSize` vendor bytes before reading signature entries, violating UEFI spec section 31.4.1.
+
+Impact
+------
+
+For `hashSHA256SigGUID` lists, attacker-controlled vendor header bytes were appended directly to the trusted SHA256 hash list. A crafted TPM event log could inject arbitrary hashes into the verifier's trusted measurement database, allowing a remote attestation verifier to accept a compromised boot state as legitimate.
+
+Fix
+---
+
+*   Add bound check: `SignatureHeaderSize` must not exceed remaining list space
+*   Skip `SignatureHeaderSize` vendor bytes via `buf.Seek()` before both entry loops
+*   Fix loop start offset for both `certX509SigGUID` and `hashSHA256SigGUID` handlers
+*   Add regression test: `TestParseEfiSignatureListNonZeroSignatureHeaderSize`
+
+Testing
+-------
+
+=== RUN TestParseEfiSignatureListNonZeroSignatureHeaderSize
+--- PASS: TestParseEfiSignatureListNonZeroSignatureHeaderSize (0.00s)
+PASS
+
+Reported via Google OSS VRP issue #513787653.
+Security advisory: GHSA-9r4w-jg96-92mv

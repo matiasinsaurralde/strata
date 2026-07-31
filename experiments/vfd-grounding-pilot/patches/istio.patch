@@ -1,0 +1,189 @@
+From 692e460c342d8f308a35b6ecbdace47807da8ade Mon Sep 17 00:00:00 2001
+From: Keith Mattix II <keithmattix@microsoft.com>
+Date: Thu, 2 Apr 2026 19:45:00 -0500
+Subject: [PATCH] Quote metacharacters in SA regex (#59700)
+
+* Quote metacharacters in SA regex
+
+Signed-off-by: Keith Mattix II <keithmattix@microsoft.com>
+
+* Add release note
+
+Signed-off-by: Keith Mattix II <keithmattix@microsoft.com>
+
+---------
+
+Signed-off-by: Keith Mattix II <keithmattix@microsoft.com>
+---
+ pilot/pkg/security/authz/model/generator.go   |  3 +-
+ .../security/authz/model/generator_test.go    | 44 +++++++++++++++----
+ releasenotes/notes/59700.yaml                 |  8 ++++
+ 3 files changed, 46 insertions(+), 9 deletions(-)
+ create mode 100644 releasenotes/notes/59700.yaml
+
+diff --git a/pilot/pkg/security/authz/model/generator.go b/pilot/pkg/security/authz/model/generator.go
+index 5f54b3d5f05..e12bf33af8b 100644
+--- a/pilot/pkg/security/authz/model/generator.go
++++ b/pilot/pkg/security/authz/model/generator.go
+@@ -16,6 +16,7 @@ package model
+
+ import (
+ 	"fmt"
++	"regexp"
+ 	"strings"
+
+ 	rbacpb "github.com/envoyproxy/go-control-plane/envoy/config/rbac/v3"
+@@ -209,7 +210,7 @@ func serviceAccountRegex(defaultNamespace string, value string) string {
+ 	// optional arbitrary k/v pairs
+ 	// '/sa/<serviceAccount>'
+ 	// Either end of string OR / + arbitrary k/v pairs (the / ensures we do not match <service account>-some-junk)
+-	return fmt.Sprintf("spiffe://.+/ns/%s/(.+/|)sa/%s(/.+)?", ns, sa)
++	return fmt.Sprintf("spiffe://.+/ns/%s/(.+/|)sa/%s(/.+)?", regexp.QuoteMeta(ns), regexp.QuoteMeta(sa))
+ }
+
+ type srcPrincipalGenerator struct{}
+diff --git a/pilot/pkg/security/authz/model/generator_test.go b/pilot/pkg/security/authz/model/generator_test.go
+index 467691605da..8edd6cdbfc3 100644
+--- a/pilot/pkg/security/authz/model/generator_test.go
++++ b/pilot/pkg/security/authz/model/generator_test.go
+@@ -459,74 +459,81 @@ func TestGenerator(t *testing.T) {
+ }
+
+ func TestServiceAccount(t *testing.T) {
+-	input := "my-ns/my-sa"
+ 	cases := []struct {
+ 		Name     string
++		Input    string
+ 		Identity string
+ 		Match    bool
+ 	}{
+ 		{
+ 			Name:     "standard",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/ns/my-ns/sa/my-sa",
+ 			Match:    true,
+ 		},
+ 		{
+ 			Name:     "suffix attributes",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/ns/my-ns/sa/my-sa/k/v",
+ 			Match:    true,
+ 		},
+ 		{
+ 			Name:     "prefix attributes",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/k/v/ns/my-ns/sa/my-sa",
+ 			Match:    true,
+ 		},
+ 		{
+ 			Name:     "middle attributes",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/ns/my-ns/k/v/sa/my-sa",
+ 			Match:    true,
+ 		},
+ 		{
+ 			Name:     "all attributes",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/k1/v1/ns/my-ns/k2/v2/sa/my-sa/k3/v3",
+ 			Match:    true,
+ 		},
+ 		{
+ 			Name:     "sa suffix string",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/ns/my-ns/sa/my-sa-suffix",
+ 			Match:    false,
+ 		},
+ 		{
+ 			Name:     "ns suffix string",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/ns/my-ns-suffix/sa/my-sa",
+ 			Match:    false,
+ 		},
+ 		{
+ 			Name:     "not spiffe",
++			Input:    "my-ns/my-sa",
+ 			Identity: "cluster.local/ns/my-ns/sa/my-sa",
+ 			Match:    false,
+ 		},
+ 		{
+ 			Name:     "invalid spiffe",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://ns/my-ns/sa/my-sa",
+ 			Match:    false,
+ 		},
+ 		{
+ 			Name:     "missing sa",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/ns/my-ns",
+ 			Match:    false,
+ 		},
+ 		{
+ 			Name:     "missing ns",
++			Input:    "my-ns/my-sa",
+ 			Identity: "spiffe://cluster.local/sa/my-sa",
+ 			Match:    false,
+ 		},
+ 		{
+-			Name:     "missing ns",
+-			Identity: "spiffe://cluster.local/sa/my-sa",
+-			Match:    false,
+-		},
+-		{
+-			Name: "weird keys",
++			Name:  "weird keys",
++			Input: "my-ns/my-sa",
+ 			// This test case matches when it shouldn't ideally.
+ 			// Spiffe is a set of k/v pairs. Here we are accidentally matching
+ 			// on previous value + next key when we shouldn't.
+@@ -539,10 +546,28 @@ func TestServiceAccount(t *testing.T) {
+ 			}, "/"),
+ 			Match: true,
+ 		},
++		{
++			Name:     "regex metachars - exact match with dots",
++			Input:    "my.ns/my.sa",
++			Identity: "spiffe://cluster.local/ns/my.ns/sa/my.sa",
++			Match:    true,
++		},
++		{
++			Name:     "regex metachars - dot should not match arbitrary char in ns",
++			Input:    "my.ns/my.sa",
++			Identity: "spiffe://cluster.local/ns/myXns/sa/my.sa",
++			Match:    false,
++		},
++		{
++			Name:     "regex metachars - dot should not match arbitrary char in sa",
++			Input:    "my.ns/my.sa",
++			Identity: "spiffe://cluster.local/ns/my.ns/sa/myXsa",
++			Match:    false,
++		},
+ 	}
+ 	for _, tt := range cases {
+ 		t.Run(tt.Name, func(t *testing.T) {
+-			r := serviceAccountRegex("", input)
++			r := serviceAccountRegex("", tt.Input)
+ 			// Parse as regex. Envoy does a full string match, so handle that
+ 			rgx, err := regexp.Compile("^" + r + "$")
+ 			if err != nil {
+@@ -574,4 +599,7 @@ func yamlPrincipal(t *testing.T, yaml string) *rbacpb.Principal {
+ func TestServiceAccountRegex(t *testing.T) {
+ 	assert.Equal(t, serviceAccountRegex("", "my-ns/my-sa"), `spiffe://.+/ns/my-ns/(.+/|)sa/my-sa(/.+)?`)
+ 	assert.Equal(t, serviceAccountRegex("my-ns", "my-sa"), `spiffe://.+/ns/my-ns/(.+/|)sa/my-sa(/.+)?`)
++	// Regex metacharacters in namespace and SA name should be escaped
++	assert.Equal(t, serviceAccountRegex("", "my.ns/my.sa"), `spiffe://.+/ns/my\.ns/(.+/|)sa/my\.sa(/.+)?`)
++	assert.Equal(t, serviceAccountRegex("ns+foo", "sa(bar)"), `spiffe://.+/ns/ns\+foo/(.+/|)sa/sa\(bar\)(/.+)?`)
+ }
+diff --git a/releasenotes/notes/59700.yaml b/releasenotes/notes/59700.yaml
+new file mode 100644
+index 00000000000..f8c6f287a2b
+--- /dev/null
++++ b/releasenotes/notes/59700.yaml
+@@ -0,0 +1,8 @@
++apiVersion: release-notes/v2
++kind: bug-fix
++area: security
++issue:
++- 59700
++releaseNotes:
++- |
++    **Fixed** serivceAccount matcher regex in AuthorizationPolicy to properly quote the service account name, allowing for correct matching of service accounts with special characters in their names.

@@ -1,0 +1,35 @@
+From 51806c22c5754bfbdeca6910f15571a07921b784 Mon Sep 17 00:00:00 2001
+From: David Xu <hengweix@amazon.com>
+Date: Thu, 9 Apr 2026 15:18:58 +0000
+Subject: [PATCH] Validate mountTargetIp as a valid IP address in
+ NodePublishVolume
+
+---
+ pkg/driver/node.go | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/pkg/driver/node.go b/pkg/driver/node.go
+index e5d19236b..044f086eb 100644
+--- a/pkg/driver/node.go
++++ b/pkg/driver/node.go
+@@ -20,6 +20,7 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
++	"net"
+ 	"os"
+ 	"path"
+ 	"regexp"
+@@ -112,8 +113,10 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
+ 				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %q must be a boolean value: %v", k, err))
+ 			}
+ 		case MountTargetIp:
+-			ipAddr := volContext[MountTargetIp]
+-			mountOptions = append(mountOptions, MountTargetIp+"="+ipAddr)
++			if net.ParseIP(v) == nil {
++				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %q=%q is not a valid IP address", k, v))
++			}
++			mountOptions = append(mountOptions, MountTargetIp+"="+v)
+ 		case CrossAccount:
+ 			var err error
+ 			crossAccountDNSEnabled, err = strconv.ParseBool(v)

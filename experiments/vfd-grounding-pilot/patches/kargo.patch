@@ -1,0 +1,344 @@
+From 23646eaefb449a6cc2e76a8033e8a57f71369772 Mon Sep 17 00:00:00 2001
+From: Taylor Thomas <taylor.thomas@akuity.io>
+Date: Mon, 26 Jan 2026 15:54:49 -0700
+Subject: [PATCH] Merge commit from fork
+
+Signed-off-by: Kent Rancourt <kent.rancourt@gmail.com>
+Co-authored-by: Kent Rancourt <kent.rancourt@gmail.com>
+---
+ cmd/controlplane/api.go             |  1 +
+ internal/cli/cmd/server/server.go   |  3 +-
+ internal/server/config/config.go    |  2 +
+ internal/server/option/auth.go      | 94 +++++++++++++++++++----------
+ internal/server/option/auth_test.go | 89 +++++++++++++++++++++++----
+ 5 files changed, 146 insertions(+), 43 deletions(-)
+
+diff --git a/cmd/controlplane/api.go b/cmd/controlplane/api.go
+index ad30a1b15a..9cd483050a 100644
+--- a/cmd/controlplane/api.go
++++ b/cmd/controlplane/api.go
+@@ -78,6 +78,7 @@ func (o *apiOptions) run(ctx context.Context) error {
+ 		return fmt.Errorf("error getting Kubernetes client REST config: %w", err)
+ 	}
+ 	kubernetes.ConfigureQPSBurst(ctx, restCfg, o.QPS, o.Burst)
++	serverCfg.RestConfig = restCfg
+
+ 	kubeClientOptions := kubernetes.ClientOptions{}
+ 	if serverCfg.OIDCConfig != nil {
+diff --git a/internal/cli/cmd/server/server.go b/internal/cli/cmd/server/server.go
+index aae7b5db5e..54c1e88d42 100644
+--- a/internal/cli/cmd/server/server.go
++++ b/internal/cli/cmd/server/server.go
+@@ -91,7 +91,8 @@ func (o *serverOptions) run(ctx context.Context) error {
+
+ 	srv := server.NewServer(
+ 		apiconfig.ServerConfig{
+-			LocalMode: true,
++			RestConfig: restCfg,
++			LocalMode:  true,
+ 		},
+ 		client,
+ 		rbac.NewKubernetesRolesDatabase(client),
+diff --git a/internal/server/config/config.go b/internal/server/config/config.go
+index 095c5a6404..8967c624d3 100644
+--- a/internal/server/config/config.go
++++ b/internal/server/config/config.go
+@@ -6,6 +6,7 @@ import (
+ 	"time"
+
+ 	"github.com/kelseyhightower/envconfig"
++	"k8s.io/client-go/rest"
+
+ 	"github.com/akuity/kargo/internal/os"
+ 	"github.com/akuity/kargo/internal/server/dex"
+@@ -32,6 +33,7 @@ type ServerConfig struct {
+ 	AnalysisRunLogToken         string
+ 	AnalysisRunLogHTTPHeaders   map[string]string
+ 	ClusterSecretNamespace      string
++	RestConfig                  *rest.Config
+ }
+
+ func ServerConfigFromEnv() ServerConfig {
+diff --git a/internal/server/option/auth.go b/internal/server/option/auth.go
+index 09b18d2c97..e6ce7e4cf1 100644
+--- a/internal/server/option/auth.go
++++ b/internal/server/option/auth.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/hashicorp/go-cleanhttp"
+ 	corev1 "k8s.io/api/core/v1"
+ 	"k8s.io/apimachinery/pkg/types"
++	"k8s.io/client-go/rest"
+ 	libClient "sigs.k8s.io/controller-runtime/pkg/client"
+
+ 	kargoapi "github.com/akuity/kargo/api/v1alpha1"
+@@ -50,16 +51,11 @@ type authInterceptor struct {
+ 		claims jwt.Claims,
+ 	) (*jwt.Token, []string, error)
+ 	verifyKargoIssuedTokenFn func(rawToken string) bool
+-	verifyIDPIssuedTokenFn   func(
+-		ctx context.Context,
+-		rawToken string,
+-	) (claims, error)
+-	oidcTokenVerifyFn     goOIDCIDTokenVerifyFn
+-	oidcExtractClaimsFn   func(*oidc.IDToken) (claims, error)
+-	listServiceAccountsFn func(
+-		ctx context.Context,
+-		c claims,
+-	) (map[string]map[types.NamespacedName]struct{}, error)
++	verifyIDPIssuedTokenFn   func(ctx context.Context, rawToken string) (claims, error)
++	verifyKubernetesTokenFn  func(ctx context.Context, rawToken string) error
++	oidcTokenVerifyFn        goOIDCIDTokenVerifyFn
++	oidcExtractClaimsFn      func(*oidc.IDToken) (claims, error)
++	listServiceAccountsFn    func(ctx context.Context, c claims) (map[string]map[types.NamespacedName]struct{}, error)
+ }
+
+ // goOIDCIDTokenVerifyFn is a github.com/coreos/go-oidc/v3/oidc/IDTokenVerifier.Verify() function
+@@ -82,6 +78,7 @@ func newAuthInterceptor(
+ 		jwt.NewParser(jwt.WithoutClaimsValidation()).ParseUnverified
+ 	a.verifyKargoIssuedTokenFn = a.verifyKargoIssuedToken
+ 	a.verifyIDPIssuedTokenFn = a.verifyIDPIssuedToken
++	a.verifyKubernetesTokenFn = a.verifyKubernetesToken
+ 	a.oidcExtractClaimsFn = oidcExtractClaims
+ 	a.listServiceAccountsFn = a.listServiceAccounts
+ 	return a
+@@ -370,22 +367,17 @@ func (a *authInterceptor) authenticate(
+
+ 	// Are we dealing with a JWT?
+ 	//
+-	// Note: If this is a JWT, we cannot trust these claims yet because we're not
+-	// verifying the token yet. We use untrustedClaims.Issuer only as a hint as to
+-	// HOW we might be able to verify the token further.
++	// If not, we no longer assume this is potentially some other form of token
++	// that the Kubernetes API server might recognize, as that is an increasingly
++	// unlikely scenario.
++	//
++	// If this IS a JWT, we cannot trust these claims yet because we're not
++	// verifying the token just yet. We use untrustedClaims.Issuer only as a hint
++	// as to HOW we might be able to verify the token further.
+ 	untrustedClaims := jwt.RegisteredClaims{}
+ 	if _, _, err := a.parseUnverifiedJWTFn(rawToken, &untrustedClaims); err != nil {
+-		// This token isn't a JWT, so it's probably an opaque bearer token for the
+-		// Kubernetes API server. Just run with it. If we're wrong, Kubernetes API
+-		// calls will simply have auth errors that will bubble back to the client.
+-		return user.ContextWithInfo(
+-			ctx,
+-			user.Info{
+-				BearerToken: rawToken,
+-			},
+-		), nil
++		return ctx, errors.New("invalid token")
+ 	}
+-
+ 	logger.Debug("found untrusted claims in token", "claims", untrustedClaims)
+
+ 	// If we get to here, we're dealing with a JWT. It could have been issued:
+@@ -453,15 +445,16 @@ func (a *authInterceptor) authenticate(
+
+ 	}
+
+-	// Case 3 or 4: We don't know how to verify this token. It's probably a token
+-	// issued by the Kubernetes cluster's identity provider. Just run with it. If
+-	// we're wrong, Kubernetes API calls will simply have auth errors that will
+-	// bubble back to the client.
++	// Case 3 or 4: We don't know how to verify this token. It's possibly a token
++	// issued by the Kubernetes cluster's identity provider.
+
+-	logger.Debug(
+-		"could not verify token; assuming it might have been issued by " +
+-			"Kubernetes cluster identity provider",
+-	)
++	// Test whether Kubernetes recognizes this token by making a request to /api
++	logger.Debug("could not verify token; checking if Kubernetes recognizes it")
++	if err := a.verifyKubernetesTokenFn(ctx, rawToken); err != nil {
++		logger.Debug("token not recognized by Kubernetes", "error", err)
++		return ctx, errors.New("invalid token")
++	}
++	logger.Debug("token recognized by Kubernetes")
+
+ 	return user.ContextWithInfo(
+ 		ctx,
+@@ -531,3 +524,42 @@ func oidcExtractClaims(token *oidc.IDToken) (claims, error) {
+ 	err := token.Claims(&c)
+ 	return c, err
+ }
++
++// verifyKubernetesToken tests whether the Kubernetes API server recognizes the
++// provided token by making a GET request to the /api endpoint. This is a
++// lightweight check that doesn't require any specific permissions.
++func (a *authInterceptor) verifyKubernetesToken(
++	ctx context.Context,
++	rawToken string,
++) error {
++	if a.cfg.RestConfig == nil { // This shouldn't happen, but just in case...
++		return errors.New("Kubernetes REST config is not available") // nolint: staticcheck
++	}
++
++	transport, err := rest.TransportFor(a.cfg.RestConfig)
++	if err != nil {
++		return fmt.Errorf("create transport: %w", err)
++	}
++
++	apiURL := strings.TrimSuffix(a.cfg.RestConfig.Host, "/") + "/api"
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
++	if err != nil {
++		return fmt.Errorf("create request: %w", err)
++	}
++	req.Header.Set("Authorization", "Bearer "+rawToken)
++
++	resp, err := (&http.Client{Transport: transport}).Do(req)
++	if err != nil {
++		return fmt.Errorf("execute request: %w", err)
++	}
++	defer resp.Body.Close()
++
++	if resp.StatusCode != http.StatusOK {
++		return fmt.Errorf(
++			"unexpected response from Kubernetes API server: %d",
++			resp.StatusCode,
++		)
++	}
++
++	return nil
++}
+diff --git a/internal/server/option/auth_test.go b/internal/server/option/auth_test.go
+index 130c489869..6115c5846e 100644
+--- a/internal/server/option/auth_test.go
++++ b/internal/server/option/auth_test.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/golang-jwt/jwt/v5"
+ 	"github.com/stretchr/testify/require"
+ 	"k8s.io/apimachinery/pkg/types"
++	"k8s.io/client-go/rest"
+
+ 	"github.com/akuity/kargo/internal/server/config"
+ 	"github.com/akuity/kargo/internal/server/dex"
+@@ -52,6 +53,7 @@ func TestNewAuthInterceptor(t *testing.T) {
+ 	require.NotNil(t, a.parseUnverifiedJWTFn)
+ 	require.NotNil(t, a.verifyKargoIssuedTokenFn)
+ 	require.NotNil(t, a.verifyIDPIssuedTokenFn)
++	require.NotNil(t, a.verifyKubernetesTokenFn)
+ 	require.NotNil(t, a.oidcExtractClaimsFn)
+ 	require.NotNil(t, a.listServiceAccountsFn)
+ }
+@@ -199,14 +201,10 @@ func TestAuthenticate(t *testing.T) {
+ 				},
+ 			},
+ 			token: testToken,
+-			// We can't parse the token as a JWT, so we assume it could be an opaque
+-			// bearer token for the k8s API server. We expect user info containing the
+-			// raw token to be bound to the context.
+ 			assertions: func(ctx context.Context, err error) {
+-				require.NoError(t, err)
+-				u, ok := user.InfoFromContext(ctx)
+-				require.True(t, ok)
+-				require.Equal(t, testToken, u.BearerToken)
++				require.Equal(t, "invalid token", err.Error())
++				_, ok := user.InfoFromContext(ctx)
++				require.False(t, ok)
+ 			},
+ 		},
+ 		"failure verifying Kargo-issued token": {
+@@ -354,7 +352,7 @@ func TestAuthenticate(t *testing.T) {
+ 				require.Equal(t, testToken, u.BearerToken)
+ 			},
+ 		},
+-		"unrecognized JWT": {
++		"unrecognized JWT recognized by Kubernetes": {
+ 			procedure: testProcedure,
+ 			authInterceptor: &authInterceptor{
+ 				parseUnverifiedJWTFn: func(_ string, claims jwt.Claims) (*jwt.Token, []string, error) {
+@@ -363,11 +361,14 @@ func TestAuthenticate(t *testing.T) {
+ 					rc.Issuer = "unrecognized-issuer"
+ 					return nil, nil, nil
+ 				},
++				verifyKubernetesTokenFn: func(context.Context, string) error {
++					return nil // Token is recognized by Kubernetes
++				},
+ 			},
+ 			token: testToken,
+-			// We can't verify this token, so we assume it could be an an identity
+-			// token from the k8s API server's identity provider. We expect user info
+-			// containing the raw token to be bound to the context.
++			// We can't verify this token, so we check if Kubernetes recognizes it.
++			// In this case it does, so we expect user info containing the raw token
++			// to be bound to the context.
+ 			assertions: func(ctx context.Context, err error) {
+ 				require.NoError(t, err)
+ 				u, ok := user.InfoFromContext(ctx)
+@@ -375,6 +376,29 @@ func TestAuthenticate(t *testing.T) {
+ 				require.Equal(t, testToken, u.BearerToken)
+ 			},
+ 		},
++		"unrecognized JWT not recognized by Kubernetes": {
++			procedure: testProcedure,
++			authInterceptor: &authInterceptor{
++				parseUnverifiedJWTFn: func(_ string, claims jwt.Claims) (*jwt.Token, []string, error) {
++					rc, ok := claims.(*jwt.RegisteredClaims)
++					require.True(t, ok)
++					rc.Issuer = "unrecognized-issuer"
++					return nil, nil, nil
++				},
++				verifyKubernetesTokenFn: func(context.Context, string) error {
++					return errors.New("token not recognized")
++				},
++			},
++			token: testToken,
++			// We can't verify this token and Kubernetes doesn't recognize it either.
++			// This should result in an authentication error.
++			assertions: func(ctx context.Context, err error) {
++				require.Error(t, err)
++				require.Equal(t, "invalid token", err.Error())
++				_, ok := user.InfoFromContext(ctx)
++				require.False(t, ok)
++			},
++		},
+ 	}
+ 	for name, ts := range testSets {
+ 		t.Run(name, func(t *testing.T) {
+@@ -594,3 +618,46 @@ func TestVerifyKargoIssuedToken(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestVerifyKubernetesToken(t *testing.T) {
++	const testToken = "test-bearer-token"
++
++	testCases := []struct {
++		name              string
++		mockK8sAPIHandler http.HandlerFunc
++		assertions        func(t *testing.T, err error)
++	}{
++		{
++			name: "Kubernetes API returns 200",
++			mockK8sAPIHandler: func(w http.ResponseWriter, r *http.Request) {
++				// Verify the token was passed correctly
++				require.Equal(t, "Bearer "+testToken, r.Header.Get("Authorization"))
++				require.Equal(t, "/api", r.URL.Path)
++				w.WriteHeader(http.StatusOK)
++			},
++			assertions: func(t *testing.T, err error) {
++				require.NoError(t, err)
++			},
++		},
++		{
++			name: "Kubernetes API returns non-200",
++			mockK8sAPIHandler: func(w http.ResponseWriter, _ *http.Request) {
++				w.WriteHeader(http.StatusUnauthorized)
++			},
++			assertions: func(t *testing.T, err error) {
++				require.ErrorContains(t, err, "unexpected response from Kubernetes API server: 401")
++			},
++		},
++	}
++	for _, testCase := range testCases {
++		t.Run(testCase.name, func(t *testing.T) {
++			srv := httptest.NewServer(testCase.mockK8sAPIHandler)
++			t.Cleanup(srv.Close)
++			authenticator := &authInterceptor{
++				cfg: config.ServerConfig{RestConfig: &rest.Config{Host: srv.URL}},
++			}
++			err := authenticator.verifyKubernetesToken(t.Context(), testToken)
++			testCase.assertions(t, err)
++		})
++	}
++}

@@ -1,0 +1,25 @@
+From 818127349ccec812876693c4ca74ebf4350ec6b7 Mon Sep 17 00:00:00 2001
+From: moloch-- <875022+moloch--@users.noreply.github.com>
+Date: Thu, 5 Feb 2026 12:29:59 -0800
+Subject: [PATCH] Use correct path construction in website.ToProtobuf()
+
+---
+ server/db/models/website.go | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/server/db/models/website.go b/server/db/models/website.go
+index adacb8fc84..f68bcbebe8 100644
+--- a/server/db/models/website.go
++++ b/server/db/models/website.go
+@@ -52,7 +52,10 @@ func (w *Website) BeforeCreate(tx *gorm.DB) (err error) {
+ func (w *Website) ToProtobuf(webContentDir string) *clientpb.Website {
+ 	WebContents := map[string]*clientpb.WebContent{}
+ 	for _, webcontent := range w.WebContents {
+-		contents, _ := os.ReadFile(filepath.Join(webContentDir, webcontent.Path))
++		contents, err := os.ReadFile(filepath.Join(webContentDir, webcontent.ID.String()))
++		if err != nil {
++			continue
++		}
+ 		WebContents[webcontent.ID.String()] = webcontent.ToProtobuf(&contents)
+ 	}
+ 	return &clientpb.Website{

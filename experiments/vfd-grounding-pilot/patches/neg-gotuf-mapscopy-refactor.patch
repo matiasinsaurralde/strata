@@ -1,0 +1,89 @@
+From 4b704cdac869b71e2fd67da76aaa09579b1df137 Mon Sep 17 00:00:00 2001
+From: udf2457 <udf2457@users.noreply.github.com>
+Date: Tue, 16 Jun 2026 07:35:09 +0100
+Subject: [PATCH] Replace copyMapValues with maps.Copy from stdlib (#740)
+
+* Replace copyMapValues with maps.Copy from stdlib
+
+maps.Copy is in stdlib since go1.21, removing the need for `func copyMapValues(src, dst map[string]any)`
+
+Signed-off-by: udf2457 <udf2457@users.noreply.github.com>
+
+* Simplify root signers assignment with maps.Copy
+
+Refactor code to use maps.Copy for root signers.
+
+Signed-off-by: udf2457 <udf2457@users.noreply.github.com>
+
+---------
+
+Signed-off-by: udf2457 <udf2457@users.noreply.github.com>
+---
+ metadata/marshal.go                           | 36 ++++++++-----------
+ .../updater/updater_top_level_update_test.go  |  5 ++-
+ 2 files changed, 17 insertions(+), 24 deletions(-)
+
+diff --git a/metadata/marshal.go b/metadata/marshal.go
+index f0bdc530..e88bfd47 100644
+--- a/metadata/marshal.go
++++ b/metadata/marshal.go
+@@ -22,6 +22,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"maps"
+ )
+
+ // The following marshal/unmarshal methods override the default behavior for for each TUF type
+@@ -30,7 +31,7 @@ import (
+ func (signed RootType) MarshalJSON() ([]byte, error) {
+ 	dict := map[string]any{}
+ 	if len(signed.UnrecognizedFields) != 0 {
+-		copyMapValues(signed.UnrecognizedFields, dict)
++		maps.Copy(dict, signed.UnrecognizedFields)
+ 	}
+ 	dict["_type"] = signed.Type
+ 	dict["spec_version"] = signed.SpecVersion
+@@ -281,7 +282,7 @@ func (key *Key) UnmarshalJSON(data []byte) error {
+ func (meta Metadata[T]) MarshalJSON() ([]byte, error) {
+ 	dict := map[string]any{}
+ 	if len(meta.UnrecognizedFields) != 0 {
+-		copyMapValues(meta.UnrecognizedFields, dict)
++		maps.Copy(dict, meta.UnrecognizedFields)
+ 	}
+ 	dict["signed"] = meta.Signed
+ 	dict["signatures"] = meta.Signatures
+@@ -572,10 +573,3 @@ func (b HexBytes) MarshalJSON() ([]byte, error) {
+ func (b HexBytes) String() string {
+ 	return hex.EncodeToString(b)
+ }
+-
+-// copyMapValues copies the values of the src map to dst
+-func copyMapValues(src, dst map[string]any) {
+-	for k, v := range src {
+-		dst[k] = v
+-	}
+-}
+diff --git a/metadata/updater/updater_top_level_update_test.go b/metadata/updater/updater_top_level_update_test.go
+index 214105b4..9d0214e0 100644
+--- a/metadata/updater/updater_top_level_update_test.go
++++ b/metadata/updater/updater_top_level_update_test.go
+@@ -20,6 +20,7 @@ package updater
+ import (
+ 	"fmt"
+ 	"log/slog"
++	"maps"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -417,9 +418,7 @@ func TestIntermediateRootInclorrectlySigned(t *testing.T) {
+
+ 	simulator.Sim.MDRoot.Signed.Version += 1
+ 	rootSigners := make(map[string]*signature.Signer)
+-	for k, v := range simulator.Sim.Signers[metadata.ROOT] {
+-		rootSigners[k] = v
+-	}
++	maps.Copy(rootSigners, simulator.Sim.Signers[metadata.ROOT])
+ 	for k := range simulator.Sim.Signers[metadata.ROOT] {
+ 		delete(simulator.Sim.Signers[metadata.ROOT], k)
+ 	}

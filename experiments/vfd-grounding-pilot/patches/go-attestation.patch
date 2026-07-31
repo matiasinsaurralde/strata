@@ -1,0 +1,159 @@
+From b6e905e7ae52937f02b5ca494dd1c6a3ac7a1003 Mon Sep 17 00:00:00 2001
+From: Prasanna Dabi <65734642+prasanna8585@users.noreply.github.com>
+Date: Fri, 22 May 2026 10:41:35 +0530
+Subject: [PATCH] attest/internal: skip SignatureHeaderSize vendor bytes in
+ parseEfiSignatureList (#502)
+
+* attest/internal: skip SignatureHeaderSize vendor bytes in parseEfiSignatureList
+
+Per UEFI specification section 31.4.1, an EFI_SIGNATURE_LIST contains
+SignatureHeaderSize bytes of vendor-specific data between the fixed
+28-byte header and the actual signature entries.
+
+parseEfiSignatureList() did not advance the buffer past these vendor
+bytes before reading entries. For hashSHA256SigGUID lists, this allowed
+attacker-controlled vendor header bytes to be appended to the trusted
+SHA256 hash list. A crafted TPM event log could inject arbitrary SHA256
+hashes into the verifier's trusted measurement database, enabling a
+remote attestation verifier to accept a compromised boot state.
+
+Fix:
+- Validate: SignatureHeaderSize must not exceed remaining list space
+- Skip SignatureHeaderSize vendor bytes via binary.Read before entry loops
+- Fix both certX509SigGUID and hashSHA256SigGUID loop start offsets
+- Add regression test confirming vendor bytes are not trusted as hashes
+
+Reported via Google OSS VRP issue #513787653.
+
+* attest/internal: address review feedback on SignatureHeaderSize fix
+
+- Use buf.Seek() instead of binary.Read() to skip vendor header bytes
+  (no need to allocate vendorHeader since we do not use its contents)
+- Add sha256HashSize const instead of magic literal 32
+- Reuse buildEFISignatureListData() in regression test
+- Use efiSignatureListHeaderSize instead of magic literal 28
+
+* attest/internal: fix gofmt formatting
+
+* attest/internal: split SignatureHeaderSize test into two deterministic tests
+
+Split TestParseEfiSignatureListNonZeroSignatureHeaderSize into:
+- TestParseEfiSignatureListOversizedSignatureHeaderSize: verifies the
+  bound check rejects SignatureHeaderSize >= remainingListSize
+- TestParseEfiSignatureListVendorHeaderNotTrusted: verifies vendor bytes
+  are skipped and do not appear in the trusted hash list
+
+* attest/internal: simplify TestParseEfiSignatureListVendorHeaderNotTrusted
+
+Check length and first element directly instead of iterating,
+as suggested by reviewer.
+
+---------
+
+Co-authored-by: Prasanna Dabi <prasanna8585@users.noreply.github.com>
+---
+ attest/internal/events.go      | 19 +++++++++++--
+ attest/internal/events_test.go | 52 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 69 insertions(+), 2 deletions(-)
+
+diff --git a/attest/internal/events.go b/attest/internal/events.go
+index 648e88f..4a4c17c 100644
+--- a/attest/internal/events.go
++++ b/attest/internal/events.go
+@@ -381,11 +381,26 @@ func parseEfiSignatureList(b []byte) ([]x509.Certificate, [][]byte, error) {
+ 		if signatures.Header.SignatureSize > remainingListSize {
+ 			return nil, nil, fmt.Errorf("SignatureSize %d exceeds remaining signature list space %d", signatures.Header.SignatureSize, remainingListSize)
+ 		}
++		// Guard against hash injection via oversized SignatureHeaderSize.
++		// Per UEFI spec section 31.4.1, SignatureHeaderSize bytes of vendor data
++		// appear between the fixed header and the actual signature entries.
++		// SignatureHeaderSize must not consume the entire remaining list space.
++		if signatures.Header.SignatureHeaderSize >= remainingListSize {
++			return nil, nil, fmt.Errorf("SignatureHeaderSize %d exceeds remaining signature list space %d", signatures.Header.SignatureHeaderSize, remainingListSize)
++		}
++		// Skip the vendor-specific SignatureHeader bytes per UEFI spec section 31.4.1.
++		// Without this, vendor bytes are misread as signature entries, allowing a
++		// crafted event log to inject arbitrary hashes into the trusted hash list.
++		if signatures.Header.SignatureHeaderSize > 0 {
++			if _, err := buf.Seek(int64(signatures.Header.SignatureHeaderSize), io.SeekCurrent); err != nil {
++				return nil, nil, fmt.Errorf("seeking past signature vendor header: %w", err)
++			}
++		}
+
+ 		signatureType := signatures.Header.SignatureType
+ 		switch signatureType {
+ 		case certX509SigGUID: // X509 certificate
+-			for sigOffset := 0; uint32(sigOffset) < signatures.Header.SignatureListSize-efiSignatureListHeaderSize; {
++			for sigOffset := int(signatures.Header.SignatureHeaderSize); uint32(sigOffset) < signatures.Header.SignatureListSize-efiSignatureListHeaderSize; {
+ 				signature := efiSignatureData{}
+ 				signature.SignatureData = make([]byte, signatures.Header.SignatureSize-efiGUIDSize)
+ 				err := binary.Read(buf, binary.LittleEndian, &signature.SignatureOwner)
+@@ -404,7 +419,7 @@ func parseEfiSignatureList(b []byte) ([]x509.Certificate, [][]byte, error) {
+ 				certificates = append(certificates, *cert)
+ 			}
+ 		case hashSHA256SigGUID: // SHA256
+-			for sigOffset := 0; uint32(sigOffset) < signatures.Header.SignatureListSize-efiSignatureListHeaderSize; {
++			for sigOffset := int(signatures.Header.SignatureHeaderSize); uint32(sigOffset) < signatures.Header.SignatureListSize-efiSignatureListHeaderSize; {
+ 				signature := efiSignatureData{}
+ 				signature.SignatureData = make([]byte, signatures.Header.SignatureSize-efiGUIDSize)
+ 				err := binary.Read(buf, binary.LittleEndian, &signature.SignatureOwner)
+diff --git a/attest/internal/events_test.go b/attest/internal/events_test.go
+index 4a4b2f9..9dc5eee 100644
+--- a/attest/internal/events_test.go
++++ b/attest/internal/events_test.go
+@@ -65,3 +65,55 @@ func TestParseUEFIVariableData(t *testing.T) {
+ 		t.Errorf("ParseUEFIVariableData() mismatch (-want +got):\n%s", diff)
+ 	}
+ }
++
++func TestParseEfiSignatureListOversizedSignatureHeaderSize(t *testing.T) {
++	sigType := [16]byte{
++		0x26, 0x16, 0xc4, 0xc1, 0x4c, 0x50, 0x92, 0x40,
++		0xac, 0xa9, 0x41, 0xf9, 0x36, 0x93, 0x43, 0x28,
++	}
++	const (
++		sha256HashSize = 32
++		sigSize        = efiGUIDSize + sha256HashSize
++	)
++	// sigHeaderSize == remainingListSize: consumes all remaining space.
++	// The bound check must reject this.
++	sigHeaderSize := sigSize
++	sigListSize := uint32(efiSignatureListHeaderSize + sigHeaderSize)
++	data := buildEFISignatureListData(sigType, sigListSize, uint32(sigHeaderSize), sigSize, 0)
++	_, _, err := parseEfiSignatureList(data)
++	if err == nil {
++		t.Error("parseEfiSignatureList() accepted oversized SignatureHeaderSize, want error")
++	}
++}
++
++func TestParseEfiSignatureListVendorHeaderNotTrusted(t *testing.T) {
++	sigType := [16]byte{
++		0x26, 0x16, 0xc4, 0xc1, 0x4c, 0x50, 0x92, 0x40,
++		0xac, 0xa9, 0x41, 0xf9, 0x36, 0x93, 0x43, 0x28,
++	}
++	const (
++		sha256HashSize   = 32
++		sigSize          = efiGUIDSize + sha256HashSize
++		vendorHeaderSize = sha256HashSize // smaller than sigSize so bound check passes
++	)
++	// Attacker-controlled vendor header bytes.
++	attackerBytes := bytes.Repeat([]byte{0xAA}, vendorHeaderSize)
++	// One legitimate entry.
++	legitHash := bytes.Repeat([]byte{0xBB}, sha256HashSize)
++	legitEntry := make([]byte, sigSize)
++	copy(legitEntry[efiGUIDSize:], legitHash)
++	sigListSize := uint32(efiSignatureListHeaderSize + vendorHeaderSize + len(legitEntry))
++	data := buildEFISignatureListData(sigType, sigListSize, vendorHeaderSize, sigSize, 0)
++	data = append(data, attackerBytes...)
++	data = append(data, legitEntry...)
++	_, hashes, err := parseEfiSignatureList(data)
++	if err != nil {
++		t.Fatalf("parseEfiSignatureList() returned unexpected error: %v", err)
++	}
++	if len(hashes) != 1 {
++		t.Fatalf("parseEfiSignatureList returned %d hashes, expected 1, hashes: %v", len(hashes), hashes)
++	}
++	if !bytes.Equal(hashes[0], legitHash) {
++		t.Errorf("parseEfiSignatureList returned hash %x, expected %x", hashes[0], legitHash)
++	}
++}

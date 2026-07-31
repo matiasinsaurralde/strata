@@ -1,0 +1,63 @@
+From 73345ab6b0eb7e59d525dac17a428f043074cef6 Mon Sep 17 00:00:00 2001
+From: Fredrik Skogman <kommendorkapten@github.com>
+Date: Mon, 19 Jan 2026 14:52:02 +0100
+Subject: [PATCH] Perform type assertion (#710)
+
+* Perform type assertion
+
+Signed-off-by: Fredrik Skogman <kommendorkapten@github.com>
+
+* Correct error type
+
+Signed-off-by: Fredrik Skogman <kommendorkapten@github.com>
+
+---------
+
+Signed-off-by: Fredrik Skogman <kommendorkapten@github.com>
+---
+ internal/testutils/signer/signer.go | 10 +++++++++-
+ metadata/metadata.go                | 10 +++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/internal/testutils/signer/signer.go b/internal/testutils/signer/signer.go
+index 97b57080..508c8428 100644
+--- a/internal/testutils/signer/signer.go
++++ b/internal/testutils/signer/signer.go
+@@ -187,7 +187,15 @@ func getTUFMDRole(p string) (string, error) {
+ 	if err := json.Unmarshal(mdBytes, &m); err != nil {
+ 		return "", fmt.Errorf("failed to parse TUF metadata: %w", err)
+ 	}
+-	signedType := m["signed"].(map[string]any)["_type"].(string)
++	signed, ok := m["signed"].(map[string]any)
++	if !ok {
++		return "", fmt.Errorf("metadata 'signed' field is missing or not an object")
++	}
++	signedType, ok := signed["_type"].(string)
++	if !ok {
++		return "", fmt.Errorf("no _type found in signed")
++	}
++
+ 	switch signedType {
+ 	case metadata.ROOT:
+ 		fallthrough
+diff --git a/metadata/metadata.go b/metadata/metadata.go
+index d21ebdd2..397be441 100644
+--- a/metadata/metadata.go
++++ b/metadata/metadata.go
+@@ -900,7 +900,15 @@ func checkType[T Roles](data []byte) error {
+ 	if err := json.Unmarshal(data, &m); err != nil {
+ 		return err
+ 	}
+-	signedType := m["signed"].(map[string]any)["_type"].(string)
++	signed, ok := m["signed"].(map[string]any)
++	if !ok {
++		return &ErrValue{Msg: "metadata 'signed' field is missing or not an object"}
++	}
++	signedType, ok := signed["_type"].(string)
++	if !ok {
++		return &ErrValue{Msg: "no _type found in signed"}
++	}
++
+ 	switch i.(type) {
+ 	case *RootType:
+ 		if ROOT != signedType {

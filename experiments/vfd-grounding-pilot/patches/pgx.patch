@@ -1,0 +1,61 @@
+From 6dbad4cafdb8a4daab7ff79c858c95da4b6109e8 Mon Sep 17 00:00:00 2001
+From: Jack Christensen <jack@jackchristensen.com>
+Date: Fri, 20 Mar 2026 00:21:01 +0000
+Subject: [PATCH] Guard against negative parameter lengths in Bind messages
+
+fixes https://github.com/jackc/pgx/issues/2519
+---
+ pgproto3/bind.go      |  2 +-
+ pgproto3/bind_test.go | 26 ++++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/pgproto3/bind.go b/pgproto3/bind.go
+index 13700c39c..fb56e4dca 100644
+--- a/pgproto3/bind.go
++++ b/pgproto3/bind.go
+@@ -82,7 +82,7 @@ func (dst *Bind) Decode(src []byte) error {
+ 				continue
+ 			}
+
+-			if len(src[rp:]) < msgSize {
++			if msgSize < 0 || len(src[rp:]) < msgSize {
+ 				return &invalidMessageFormatErr{messageType: "Bind"}
+ 			}
+
+diff --git a/pgproto3/bind_test.go b/pgproto3/bind_test.go
+index 6ec0e0245..cd6af3244 100644
+--- a/pgproto3/bind_test.go
++++ b/pgproto3/bind_test.go
+@@ -7,6 +7,32 @@ import (
+ 	"github.com/stretchr/testify/require"
+ )
+
++// https://github.com/jackc/pgx/issues/2519
++func TestBindDecodeNegativeParameterLength(t *testing.T) {
++	t.Parallel()
++
++	// Craft a Bind message with a negative parameter length that is not -1.
++	// This should return an error, not panic.
++	//
++	// Message layout:
++	//   - destination portal: "" (1 byte null terminator)
++	//   - prepared statement: "" (1 byte null terminator)
++	//   - parameter format code count: 0 (2 bytes)
++	//   - parameter count: 1 (2 bytes)
++	//   - parameter 0 length: -2 (4 bytes, 0xFFFFFFFE)
++	src := []byte{
++		0,    // destination portal null terminator
++		0,    // prepared statement null terminator
++		0, 0, // parameter format code count = 0
++		0, 1, // parameter count = 1
++		0xFF, 0xFF, 0xFF, 0xFE, // parameter length = -2
++	}
++
++	var bind pgproto3.Bind
++	err := bind.Decode(src)
++	require.Error(t, err, "Bind.Decode should reject negative parameter length other than -1")
++}
++
+ func TestBindBiggerThanMaxMessageBodyLen(t *testing.T) {
+ 	t.Parallel()
+

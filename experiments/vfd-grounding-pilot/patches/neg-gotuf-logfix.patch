@@ -1,0 +1,25 @@
+From 45e0a1f48c987f23b974e3fbebb01e15d94a5ecb Mon Sep 17 00:00:00 2001
+From: A Bayer <andrew.bayer@gmail.com>
+Date: Fri, 15 May 2026 04:46:00 -0400
+Subject: [PATCH] Fix log line to not be `fmt`-styled (#730)
+
+We've been seeing `Failed to verify %s with key ID %s` a bunch in the logs from a service of ours that's consuming a TUF root, and it's a bit confusing to see what appears to be a `fmt`-style line that isn't actually `fmt`ed. This PR changes that `log.Info` call to work like the one a bit below it for when a key ID is verified for the role.
+
+Signed-off-by: Andrew Bayer <andrew.bayer@gmail.com>
+---
+ metadata/metadata.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/metadata/metadata.go b/metadata/metadata.go
+index 71a64de8..1318db64 100644
+--- a/metadata/metadata.go
++++ b/metadata/metadata.go
+@@ -396,7 +396,7 @@ func (meta *Metadata[T]) VerifyDelegate(delegatedRole string, delegatedMetadata
+ 		// verify if the signature for that payload corresponds to the given key
+ 		if err := verifier.VerifySignature(bytes.NewReader(sign.Signature), bytes.NewReader(payload)); err != nil {
+ 			// failed to verify the metadata with that key ID
+-			log.Info("Failed to verify %s with key ID %s", delegatedRole, keyID)
++			log.Info("Failed to verify role with key ID", "role", delegatedRole, "ID", keyID)
+ 		} else {
+ 			// save the verified keyID only if verification passed
+ 			signingKeys[keyID] = true
